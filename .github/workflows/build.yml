@@ -116,9 +116,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 目录名走环境变量而不是 ${{ }} 直接插进脚本：后者是在 shell 启动前做文本
-          # 替换，名字里带引号就等于往脚本里注入代码。（discover 已卡过格式，这里
+          # 目录名走环境变量，不直接把表达式插进脚本：表达式是在 shell 启动前做文本
+          # 替换的，名字里带引号就等于往脚本里注入代码。（discover 已卡过格式，这里
           # 是第二道，不指望单靠一处。）
+          # 注：run 块里连注释也会被当表达式解析，所以这段话里不能出现表达式语法。
           # GHCR 的仓库路径必须全小写，而 org 名是 CYL-Logan-Lab
           owner="$(tr '[:upper:]' '[:lower:]' <<<"${OWNER}")"
           echo "ref=ghcr.io/${owner}/${IMAGE}" >> "${GITHUB_OUTPUT}"
