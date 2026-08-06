@@ -1,4 +1,5 @@
-# 本仓库只放配方，不放产物 —— 镜像在 GHCR 上，本地拉出来的东西别提交进来
+# This repo holds recipes, not artefacts -- images live on GHCR, so anything
+# pulled down locally does not belong in a commit.
 *.sif
 *.tar
 *.tar.gz

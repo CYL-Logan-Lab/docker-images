@@ -1,89 +1,114 @@
 # docker-images
 
-CYL-Logan-Lab 各个项目的计算环境配方。**一个 project 一个目录，目录里一个 Dockerfile。**
-目录名跟这个 project 的仓库名对齐，一眼能看出对应关系。
+Computational environment recipes for CYL-Logan-Lab projects.
+**One project, one directory, one Dockerfile inside it.** The directory name
+matches the project's repository name, so the correspondence is obvious.
 
-镜像由 GitHub Actions 构建、推到 GHCR（public，拉取不需要登录）：
+Images are built by GitHub Actions and pushed to GHCR (public, no login needed
+to pull):
 
 ```
-ghcr.io/cyl-logan-lab/<目录名>
+ghcr.io/cyl-logan-lab/<directory>
 ```
 
-| 目录 | 用于 | 内容 |
+| Directory | Used by | Contents |
 |---|---|---|
 | [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder |
 
-## 下游项目怎么引用
+## How downstream projects reference an image
 
-**按 digest，不要按标签。** 标签是可变引用 —— 同名标签被重推之后，你拿到的是另一个
-镜像，而且没有任何提示；digest 是内容寻址的，不可变。`:latest` 只用来给人看「哪个是
-最新的」，不用来固定环境。
+**By digest, not by tag.** A tag is a mutable reference — once the same tag is
+re-pushed you get a different image with no warning. A digest is
+content-addressed and cannot change. `:latest` exists only to show a human which
+image is the newest; it is not how you pin an environment.
 
-digest 在每次发布构建的任务摘要里（Actions → 那次 run → Summary），也可以直接查：
+The digest appears in the job summary of every publishing build (Actions → that
+run → Summary), and can also be read directly:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/cyl-logan-lab/t2d-sc-lipid:latest
 ```
 
-拉取：
+Pulling:
 
 ```bash
 docker pull ghcr.io/cyl-logan-lab/t2d-sc-lipid@sha256:<digest>
 
-# 没有 docker 权限的机器上用 Singularity/Apptainer（GHCR 是 public，无需登录）
+# On machines without docker permissions, use Singularity/Apptainer
+# (GHCR is public here, so no login is required)
 singularity pull env.sif docker://ghcr.io/cyl-logan-lab/t2d-sc-lipid@sha256:<digest>
 ```
 
-然后把这个 digest 写进下游项目自己的环境脚本里，由那边做校验。
+Then write that digest into the downstream project's own environment script and
+verify it there.
 
-## 可复现性的边界（先说清楚）
+## The limits of reproducibility, stated up front
 
-**可复现的单位是产出的镜像，不是「重跑一次 build 得到同样的东西」。** 下游按 digest
-引用，所以「那次分析用的环境到底是什么」永远有确切答案。配方的职责是让镜像能被建出来，
-并且建出来的东西**符合它自己的声明**。
+**The unit of reproducibility is the image that was produced, not "rebuild and
+get the same thing".** Downstream pins by digest, so "which environment did this
+analysis actually run in" always has an exact answer. A recipe's job is to make
+the image buildable and to make the built image match its own claims.
 
-具体说：直接依赖的版本被逐个断言，对不上就 build 失败；但 Bioconductor 拖进来的
-**传递依赖**没有被钉住，它们的补丁版本漂移不会让 build 失败，只会体现在镜像里的
-`/opt/Renv-manifest.tsv`。所以同一份配方隔半年重建，**可能**得到一个略有差异的环境 ——
-这正是为什么下游必须按 digest 引用，而不是「照配方自己建一个」。
+Concretely: direct dependencies have per-package version assertions and a
+mismatch fails the build; but the **transitive** dependencies that Bioconductor
+drags in are not pinned. Their patch versions can drift without failing the
+build, and the drift is only visible in `/opt/Renv-manifest.tsv` inside the
+image. So rebuilding the same recipe six months later **may** yield a slightly
+different environment — which is exactly why downstream must reference the
+digest instead of "building its own from the recipe".
 
-## 三层 pin
+## Three pinning layers
 
-每个 Dockerfile 都要能独立回答「这个环境是什么」。做不到三层 pin 的配方，等于只是
-「大概装了这些包」：
+Every Dockerfile has to answer "what is this environment" on its own. A recipe
+without all three layers only says "roughly these packages":
 
-1. **基础镜像按 digest 取**，不按标签；并在装包脚本开头**断言** R / Seurat 版本 ——
-   顶部注释里用文字声明的东西，应该是可执行的。
-2. **CRAN 走按日期冻结的快照**（Posit Package Manager），不用滚动镜像。
-3. **Bioconductor 没有按日期的快照服务**，版本由 release 分支的 URL 钉死，但分支内部
-   仍会滚出补丁版本 —— 所以对直接依赖**逐个断言版本号**，对不上就让 build 失败。
-   断言炸了是在提醒「上游动了」：把新版本号写进配方重新 build，**不要**删断言。
+1. **Base image taken by digest**, not by tag; and the install script
+   **asserts** the R / Seurat versions — a claim stated in prose at the top of
+   the file should be executable.
+2. **CRAN through a date-frozen snapshot** (Posit Package Manager), never a
+   rolling mirror.
+3. **Bioconductor has no dated snapshot service.** The version is nailed down by
+   the release-branch URL, but that branch keeps rolling out patch versions — so
+   every direct dependency gets an **explicit version assertion** and a mismatch
+   fails the build. A failed assertion means upstream moved: write the new
+   version into the recipe and rebuild, **do not** delete the assertion.
 
-另外两条约定：
+Two further conventions:
 
-- **冒烟测试放在 Dockerfile 之外**，由 CI 在 build 之后 `docker run` 本次真正产出的
-  镜像。写成镜像里的一层是没用的：层命中缓存就整层跳过，这次 build 其实一个 R 进程
-  都没跑过，却看起来「验证过了」。发布构建按 digest 把镜像拉回来跑，连推上去的东西
-  本身一起验。
-- **把包清单烧进镜像**（`/opt/Renv-manifest.tsv`），记整个库而不只是点名的那几个 ——
-  断言覆盖不到的传递依赖，至少能事后查出「那次用的是哪个版本」。
+- **The smoke test lives outside the Dockerfile**, run by CI with `docker run`
+  against the image that build actually produced. As a layer inside the image it
+  would be useless: a cache hit skips the whole layer, so the build would not
+  have run a single R process while still looking "verified". A publishing build
+  pulls the image back by digest, so the pushed artifact itself is what gets
+  tested.
+- **Bake the package manifest into the image** (`/opt/Renv-manifest.tsv`),
+  recording the whole library rather than just the named packages — for the
+  transitive dependencies the assertions cannot cover, this at least answers
+  afterwards which version was in there.
 
-## 加一个新环境
+## Adding a new environment
 
-1. 新建目录，名字用下游 project 的仓库名（只允许小写字母、数字，以及 `.` `_` `-`
-   作分隔 —— CI 会卡这个格式，GHCR 的仓库路径必须小写）。
-2. 写 `<目录>/Dockerfile`，照着 `t2d-sc-lipid/Dockerfile` 的三层 pin 来。
-3. 在上面的表格里加一行。
-4. 开 PR —— CI 会 build 并跑冒烟测试，但不 push。合进 `main` 之后才推 GHCR。
+1. Create a directory named after the downstream project's repository (lowercase
+   letters and digits only, with `.` `_` `-` as separators — CI enforces this,
+   and a GHCR repository path must be lowercase).
+2. Write `<directory>/Dockerfile` following the three pinning layers in
+   `t2d-sc-lipid/Dockerfile`.
+3. Add a row to the table above.
+4. Open a PR — CI builds it and runs the smoke test, but does not push. Only a
+   merge to `main` publishes to GHCR.
 
-只想手动重建某一个：Actions → build → Run workflow，填目录名（留空则全建）。
-**手动触发不会发布**，只验证配方 —— 否则在功能分支上点一下就能把未合并的东西推上
-GHCR 并覆盖 `:latest`。
+To rebuild one image by hand: Actions → build → Run workflow, and give the
+directory name (empty builds all). **A manual run never publishes**, it only
+validates the recipe — otherwise one click on a feature branch would push
+unmerged work to GHCR and overwrite `:latest`.
 
-## CI 什么时候会 build
+## When CI builds
 
-- 改了某个镜像目录里的任何文件 → 只 build 那个目录。
-- 改了 `.github/` 下的东西 → 全部重建（构建方式变了，等于所有镜像都受影响）。
-- 分支首次 push 或拿不到可比较的基线 → 全部重建（宁可全建，也不要静默漏建）。
+- A file changed inside an image directory → only that directory is built.
+- Anything under `.github/` changed → everything is rebuilt (the build procedure
+  itself changed, so every image is affected).
+- First push on a branch, or no comparable baseline → everything is rebuilt
+  (better to build all than to silently skip something).
 
-发布（推 GHCR）**只发生在 push 到 `main`**。PR 和手动触发都只 build 不 push。
+Publishing to GHCR **only happens on a push to `main`**. Pull requests and
+manual runs build without pushing.

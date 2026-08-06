@@ -1,11 +1,14 @@
 name: build
 
-# 一个 project 一个顶层目录，目录里放 Dockerfile。改了哪个目录就 build 哪个。
+# One project, one top-level directory, one Dockerfile inside it. Whichever
+# directory changed is the one that gets built.
 #
-# 发布条件只有一个：**push 到 main**。PR 和手动触发都只 build 不 push ——
-# 手动触发（workflow_dispatch）可以指定任意分支，若不加 ref 限制，在功能分支上点一下
-# 就会把未合并的配方推上 GHCR 并覆盖 :latest，下游还会以为那是正式发布。
-# 这个条件在下面只写一次（env.PUBLISH），登录、push、冒烟测试、摘要都复用它。
+# There is exactly one publish condition: **a push to main**. Pull requests and
+# manual runs build but never push -- workflow_dispatch can target any branch,
+# and without a ref check one click on a feature branch would push an unmerged
+# recipe to GHCR and overwrite :latest, which downstream would read as a real
+# release. The condition is written once (env.PUBLISH) and reused by the login,
+# push, smoke-test and summary steps.
 on:
   push:
     branches: [main]
@@ -13,11 +16,12 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: '要构建的目录名；留空 = 构建全部'
+        description: 'Directory to build; empty = build all'
         required: false
         default: ''
 
-# 默认最小权限；需要写 packages 的只有 build job，在那里单独提。
+# Least privilege by default; only the build job needs to write packages, and it
+# asks for that itself.
 permissions:
   contents: read
 
@@ -33,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 要跟 base/before 做 diff，浅克隆不够
+          # Diffing against base/before needs more than a shallow clone
           fetch-depth: 0
 
       - id: pick
@@ -48,21 +52,23 @@ jobs:
 
           all_images() { find . -mindepth 2 -maxdepth 2 -name Dockerfile -printf '%h\n' | sed 's|^\./||' | sort; }
 
-          # 改动落在 .github/ 里时构建全部：workflow 本身变了，等于所有镜像的
-          # 构建方式都变了，只挑「改过的镜像目录」会一个都挑不出来。
+          # A change under .github/ rebuilds everything: the workflow itself
+          # defines how every image is built, and picking "changed image
+          # directories" would select none of them.
           changed_images() {
             local base="$1"
             local files
             files="$(git diff --name-only "${base}" "${GITHUB_SHA}")"
             if grep -q '^\.github/' <<<"${files}"; then all_images; return; fi
-            # 目录里任何文件动了都重建：Dockerfile 常会 COPY 同目录下的东西
+            # Any file in the directory triggers a rebuild: a Dockerfile
+            # commonly COPYs things next to it.
             awk -F/ 'NF>1 {print $1}' <<<"${files}" | sort -u \
               | while read -r d; do [[ -f "${d}/Dockerfile" ]] && echo "${d}"; done
           }
 
           if [[ "${EVENT}" == "workflow_dispatch" && -n "${DISPATCH_IMAGE}" ]]; then
             if [[ ! -f "${DISPATCH_IMAGE}/Dockerfile" ]]; then
-              echo "::error::找不到 ${DISPATCH_IMAGE}/Dockerfile" >&2; exit 1
+              echo "::error::no such file: ${DISPATCH_IMAGE}/Dockerfile" >&2; exit 1
             fi
             picked="${DISPATCH_IMAGE}"
           elif [[ "${EVENT}" == "workflow_dispatch" ]]; then
@@ -73,24 +79,29 @@ jobs:
                && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             picked="$(changed_images "${BEFORE}")"
           else
-            # 分支首次 push / before 已被 GC：无从 diff，宁可全建也不要静默漏建
-            echo "::notice::拿不到可比较的基线，构建全部镜像"
+            # First push on a branch, or `before` already garbage-collected:
+            # nothing to diff against, so build everything rather than silently
+            # skip something.
+            echo "::notice::no comparable baseline, building all images"
             picked="$(all_images)"
           fi
 
-          # 目录名在下游会被拼进镜像引用、也会进 shell。PR 作者能决定这个名字，
-          # 所以在进 matrix 之前就卡死格式：既挡掉引号/命令替换之类的注入，
-          # 也顺手挡掉大写字母（GHCR 仓库路径必须小写）。
+          # The directory name ends up inside an image reference and inside a
+          # shell, and a PR author gets to choose it. So the format is locked
+          # down before it reaches the matrix: this rejects quotes, command
+          # substitution and friends, and also uppercase letters (a GHCR
+          # repository path must be lowercase).
           while read -r d; do
             [[ -z "${d}" ]] && continue
             [[ "${d}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || {
-              echo "::error::非法镜像目录名：${d}（只允许小写字母、数字，以及 . _ - 作分隔）" >&2
+              echo "::error::invalid image directory name: ${d} (lowercase letters and digits only, with . _ - as separators)" >&2
               exit 1
             }
           done <<<"${picked}"
 
-          echo "选中：${picked:-（无）}"
-          # 空数组也要是合法 JSON，否则下游 fromJSON 会直接失败
+          echo "picked: ${picked:-(none)}"
+          # An empty result still has to be valid JSON, or fromJSON downstream
+          # fails outright.
           echo "images=$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"${picked}")" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -106,21 +117,25 @@ jobs:
         image: ${{ fromJSON(needs.discover.outputs.images) }}
     env:
       IMAGE: ${{ matrix.image }}
-      # 唯一的发布条件。手动触发和 PR 都是 false。
+      # The one publish condition. False for manual runs and pull requests.
       PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: 组装镜像名
+      - name: Assemble image reference
         id: name
         shell: bash
         run: |
           set -euo pipefail
-          # 目录名走环境变量，不直接把表达式插进脚本：表达式是在 shell 启动前做文本
-          # 替换的，名字里带引号就等于往脚本里注入代码。（discover 已卡过格式，这里
-          # 是第二道，不指望单靠一处。）
-          # 注：run 块里连注释也会被当表达式解析，所以这段话里不能出现表达式语法。
-          # GHCR 的仓库路径必须全小写，而 org 名是 CYL-Logan-Lab
+          # The directory name arrives through an environment variable rather
+          # than being interpolated into the script: interpolation is textual
+          # substitution done before the shell starts, so a name containing a
+          # quote is code injection. (discover already validated the format;
+          # this is the second line of defence, not a substitute for it.)
+          # Note: a GHCR repository path must be all lowercase, and the org is
+          # spelled CYL-Logan-Lab.
+          # Careful: even comments inside a run block are parsed for workflow
+          # expressions, so none of this prose may use that syntax.
           owner="$(tr '[:upper:]' '[:lower:]' <<<"${OWNER}")"
           echo "ref=ghcr.io/${owner}/${IMAGE}" >> "${GITHUB_OUTPUT}"
         env:
@@ -128,7 +143,8 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # 不发布就不登录：fork 来的 PR 拿不到写 packages 的令牌，登录只会白白失败
+      # No publish, no login: a fork PR has no token that can write packages, so
+      # logging in would only fail for nothing.
       - uses: docker/login-action@v3
         if: env.PUBLISH == 'true'
         with:
@@ -142,7 +158,8 @@ jobs:
         with:
           context: ${{ matrix.image }}
           push: ${{ env.PUBLISH == 'true' }}
-          # 不发布时把镜像 load 到本机 docker，好让下一步能真的跑起来
+          # When not publishing, load the image into the local docker so the
+          # next step can actually run it.
           load: ${{ env.PUBLISH != 'true' }}
           provenance: false
           tags: |
@@ -151,11 +168,13 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
-      # 冒烟测试必须在 Dockerfile **之外**：写成镜像里的一层的话，层命中缓存就整层
-      # 跳过，这次 build 其实一个 R 进程都没跑过，却看起来"验证过了"。
-      # 这里跑的是本次真正产出的那个镜像：发布时按 digest 拉回来跑（连推上去的东西
-      # 本身一起验），不发布时跑刚 load 进来的那个。
-      - name: 冒烟测试（跑本次真正产出的镜像）
+      # The smoke test has to live outside the Dockerfile. As a layer inside the
+      # image it would be skipped on a cache hit -- the build would not have run
+      # a single R process while still looking "verified".
+      # This runs the image this build actually produced: when publishing, pulled
+      # back by digest (so the pushed artifact itself is what gets tested);
+      # otherwise the one just loaded locally.
+      - name: Smoke test the image this build produced
         shell: bash
         env:
           REF: ${{ steps.name.outputs.ref }}
@@ -164,7 +183,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${PUBLISH}" == "true" ]]; then img="${REF}@${DIGEST}"; else img="${REF}:${SHA}"; fi
-          echo "冒烟测试镜像：${img}"
+          echo "smoke testing ${img}"
           docker run --rm "${img}" Rscript --vanilla -e '
             suppressPackageStartupMessages({library(Seurat); library(scDblFinder)})
             stopifnot(file.exists("/opt/Renv-manifest.tsv"))
@@ -172,7 +191,7 @@ jobs:
                 "/ Seurat", as.character(packageVersion("Seurat")),
                 "/ scDblFinder", as.character(packageVersion("scDblFinder")), "\n")'
 
-      - name: 报告 digest
+      - name: Report digest
         shell: bash
         env:
           REF: ${{ steps.name.outputs.ref }}
@@ -182,12 +201,12 @@ jobs:
           {
             printf '### `%s`\n\n' "${IMAGE}"
             if [[ "${PUBLISH}" == "true" ]]; then
-              echo "下游项目按 digest 引用（**不要**用 \`:latest\` 固定环境）："
+              echo "Reference this from downstream by digest (do **not** pin an environment to \`:latest\`):"
               echo
               echo '```'
               echo "${REF}@${DIGEST}"
               echo '```'
             else
-              echo "只构建、未推送（仅 push 到 \`main\` 才发布）。配方能 build 通过，冒烟测试已跑。"
+              echo "Built but not pushed (only a push to \`main\` publishes). The recipe builds and the smoke test passed."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
