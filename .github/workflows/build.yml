@@ -1,0 +1,192 @@
+name: build
+
+# 一个 project 一个顶层目录，目录里放 Dockerfile。改了哪个目录就 build 哪个。
+#
+# 发布条件只有一个：**push 到 main**。PR 和手动触发都只 build 不 push ——
+# 手动触发（workflow_dispatch）可以指定任意分支，若不加 ref 限制，在功能分支上点一下
+# 就会把未合并的配方推上 GHCR 并覆盖 :latest，下游还会以为那是正式发布。
+# 这个条件在下面只写一次（env.PUBLISH），登录、push、冒烟测试、摘要都复用它。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '要构建的目录名；留空 = 构建全部'
+        required: false
+        default: ''
+
+# 默认最小权限；需要写 packages 的只有 build job，在那里单独提。
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.pick.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要跟 base/before 做 diff，浅克隆不够
+          fetch-depth: 0
+
+      - id: pick
+        shell: bash
+        env:
+          DISPATCH_IMAGE: ${{ github.event.inputs.image }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          all_images() { find . -mindepth 2 -maxdepth 2 -name Dockerfile -printf '%h\n' | sed 's|^\./||' | sort; }
+
+          # 改动落在 .github/ 里时构建全部：workflow 本身变了，等于所有镜像的
+          # 构建方式都变了，只挑「改过的镜像目录」会一个都挑不出来。
+          changed_images() {
+            local base="$1"
+            local files
+            files="$(git diff --name-only "${base}" "${GITHUB_SHA}")"
+            if grep -q '^\.github/' <<<"${files}"; then all_images; return; fi
+            # 目录里任何文件动了都重建：Dockerfile 常会 COPY 同目录下的东西
+            awk -F/ 'NF>1 {print $1}' <<<"${files}" | sort -u \
+              | while read -r d; do [[ -f "${d}/Dockerfile" ]] && echo "${d}"; done
+          }
+
+          if [[ "${EVENT}" == "workflow_dispatch" && -n "${DISPATCH_IMAGE}" ]]; then
+            if [[ ! -f "${DISPATCH_IMAGE}/Dockerfile" ]]; then
+              echo "::error::找不到 ${DISPATCH_IMAGE}/Dockerfile" >&2; exit 1
+            fi
+            picked="${DISPATCH_IMAGE}"
+          elif [[ "${EVENT}" == "workflow_dispatch" ]]; then
+            picked="$(all_images)"
+          elif [[ "${EVENT}" == "pull_request" ]]; then
+            picked="$(changed_images "${BASE_SHA}")"
+          elif [[ -n "${BEFORE}" && "${BEFORE}" != "0000000000000000000000000000000000000000" ]] \
+               && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            picked="$(changed_images "${BEFORE}")"
+          else
+            # 分支首次 push / before 已被 GC：无从 diff，宁可全建也不要静默漏建
+            echo "::notice::拿不到可比较的基线，构建全部镜像"
+            picked="$(all_images)"
+          fi
+
+          # 目录名在下游会被拼进镜像引用、也会进 shell。PR 作者能决定这个名字，
+          # 所以在进 matrix 之前就卡死格式：既挡掉引号/命令替换之类的注入，
+          # 也顺手挡掉大写字母（GHCR 仓库路径必须小写）。
+          while read -r d; do
+            [[ -z "${d}" ]] && continue
+            [[ "${d}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || {
+              echo "::error::非法镜像目录名：${d}（只允许小写字母、数字，以及 . _ - 作分隔）" >&2
+              exit 1
+            }
+          done <<<"${picked}"
+
+          echo "选中：${picked:-（无）}"
+          # 空数组也要是合法 JSON，否则下游 fromJSON 会直接失败
+          echo "images=$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"${picked}")" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: discover
+    if: needs.discover.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.discover.outputs.images) }}
+    env:
+      IMAGE: ${{ matrix.image }}
+      # 唯一的发布条件。手动触发和 PR 都是 false。
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 组装镜像名
+        id: name
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 目录名走环境变量而不是 ${{ }} 直接插进脚本：后者是在 shell 启动前做文本
+          # 替换，名字里带引号就等于往脚本里注入代码。（discover 已卡过格式，这里
+          # 是第二道，不指望单靠一处。）
+          # GHCR 的仓库路径必须全小写，而 org 名是 CYL-Logan-Lab
+          owner="$(tr '[:upper:]' '[:lower:]' <<<"${OWNER}")"
+          echo "ref=ghcr.io/${owner}/${IMAGE}" >> "${GITHUB_OUTPUT}"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 不发布就不登录：fork 来的 PR 拿不到写 packages 的令牌，登录只会白白失败
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (+ push on main)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image }}
+          push: ${{ env.PUBLISH == 'true' }}
+          # 不发布时把镜像 load 到本机 docker，好让下一步能真的跑起来
+          load: ${{ env.PUBLISH != 'true' }}
+          provenance: false
+          tags: |
+            ${{ steps.name.outputs.ref }}:latest
+            ${{ steps.name.outputs.ref }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+      # 冒烟测试必须在 Dockerfile **之外**：写成镜像里的一层的话，层命中缓存就整层
+      # 跳过，这次 build 其实一个 R 进程都没跑过，却看起来"验证过了"。
+      # 这里跑的是本次真正产出的那个镜像：发布时按 digest 拉回来跑（连推上去的东西
+      # 本身一起验），不发布时跑刚 load 进来的那个。
+      - name: 冒烟测试（跑本次真正产出的镜像）
+        shell: bash
+        env:
+          REF: ${{ steps.name.outputs.ref }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${PUBLISH}" == "true" ]]; then img="${REF}@${DIGEST}"; else img="${REF}:${SHA}"; fi
+          echo "冒烟测试镜像：${img}"
+          docker run --rm "${img}" Rscript --vanilla -e '
+            suppressPackageStartupMessages({library(Seurat); library(scDblFinder)})
+            stopifnot(file.exists("/opt/Renv-manifest.tsv"))
+            cat("smoke ok:", R.version.string,
+                "/ Seurat", as.character(packageVersion("Seurat")),
+                "/ scDblFinder", as.character(packageVersion("scDblFinder")), "\n")'
+
+      - name: 报告 digest
+        shell: bash
+        env:
+          REF: ${{ steps.name.outputs.ref }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            printf '### `%s`\n\n' "${IMAGE}"
+            if [[ "${PUBLISH}" == "true" ]]; then
+              echo "下游项目按 digest 引用（**不要**用 \`:latest\` 固定环境）："
+              echo
+              echo '```'
+              echo "${REF}@${DIGEST}"
+              echo '```'
+            else
+              echo "只构建、未推送（仅 push 到 \`main\` 才发布）。配方能 build 通过，冒烟测试已跑。"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
