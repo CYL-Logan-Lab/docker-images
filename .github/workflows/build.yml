@@ -184,12 +184,42 @@ jobs:
           set -euo pipefail
           if [[ "${PUBLISH}" == "true" ]]; then img="${REF}@${DIGEST}"; else img="${REF}:${SHA}"; fi
           echo "smoke testing ${img}"
-          docker run --rm "${img}" Rscript --vanilla -e '
-            suppressPackageStartupMessages({library(Seurat); library(scDblFinder)})
+          docker run --rm --network none "${img}" Rscript --vanilla -e '
+            suppressPackageStartupMessages({
+              library(Seurat); library(scDblFinder)
+              library(clusterProfiler); library(org.Hs.eg.db); library(ReactomePA)
+            })
             stopifnot(file.exists("/opt/Renv-manifest.tsv"))
+            # --network none is the point of this line: enrichment must work with
+            # no network at all, otherwise the gene sets are not really in the image.
+            # Each of the three back-ends is exercised separately -- they read
+            # different databases (org.Hs.eg.db, reactome.db) and a working GO
+            # query says nothing about whether reactome.db shipped intact.
+            eg <- suppressMessages(bitr(c("POSTN","COL1A1","COL3A1","COL6A1","COL5A1",
+                                          "DCN","LUM","FN1","FBN1","SPARC","TGFB1","MMP2"),
+                                        "SYMBOL", "ENTREZID", org.Hs.eg.db))
+            go <- enrichGO(eg$ENTREZID, OrgDb = org.Hs.eg.db, ont = "BP",
+                           pvalueCutoff = 0.05, readable = TRUE)
+            re <- ReactomePA::enrichPathway(eg$ENTREZID, pvalueCutoff = 0.05, readable = TRUE)
+            stopifnot(nrow(as.data.frame(go)) > 0, nrow(as.data.frame(re)) > 0)
+            # enrichplot is only ever used to draw; building the plot object is
+            # what catches a broken install, so build one and throw it away.
+            invisible(ggplot2::ggplot_build(enrichplot::dotplot(go, showCategory = 5)))
+            # fgsea needs a ranked vector rather than a gene list, so give it one,
+            # and a gene set that is a strict subset of it -- a set equal to the
+            # whole ranking is degenerate and would pass without testing anything.
+            # fgseaSimple by name: the permutation path reached via fgsea(nperm=)
+            # is deprecated and a deprecation warning here would be noise.
+            set.seed(1)
+            rk <- setNames(seq(2, -2, length.out = length(eg$ENTREZID)), eg$ENTREZID)
+            fg <- fgsea::fgseaSimple(list(top = eg$ENTREZID[1:5]), rk, minSize = 2, nperm = 200)
+            stopifnot(nrow(fg) == 1, is.finite(fg$ES))
             cat("smoke ok:", R.version.string,
                 "/ Seurat", as.character(packageVersion("Seurat")),
-                "/ scDblFinder", as.character(packageVersion("scDblFinder")), "\n")'
+                "/ scDblFinder", as.character(packageVersion("scDblFinder")),
+                "/ clusterProfiler", as.character(packageVersion("clusterProfiler")),
+                "/ offline enrichGO", nrow(as.data.frame(go)), "terms",
+                "/ enrichPathway", nrow(as.data.frame(re)), "pathways\n")'
 
       - name: Report digest
         shell: bash

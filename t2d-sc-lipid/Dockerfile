@@ -34,10 +34,17 @@
 #      PKG_PINNED and rebuild -- do **not** delete the assertion.
 #
 # ── Why add anything on top of satijalab/seurat ─────────────────────────────
-# The project does nucleus-level doublet scoring with scDblFinder. The base
-# image ships neither scDblFinder nor its dependencies (scran, scuttle, scater,
-# bluster, edgeR, BiocNeighbors, BiocSingular, metapod, ScaledMatrix) nor
-# xgboost from CRAN.
+# Two reasons, and the base image supplies neither.
+#   1. Nucleus-level doublet scoring with scDblFinder, plus its dependencies
+#      (scran, scuttle, scater, bluster, edgeR, BiocNeighbors, BiocSingular,
+#      metapod, ScaledMatrix) and xgboost from CRAN.
+#   2. Pathway enrichment on cell-state marker sets: clusterProfiler,
+#      ReactomePA, enrichplot, fgsea and the annotation databases they read
+#      (org.Hs.eg.db, GO.db, reactome.db). The annotation packages carry the
+#      gene sets inside them, so enrichment runs offline and the gene-set
+#      version is fixed by this image's digest -- same guarantee as the code.
+#      Note this pulls in a *third* repository, the Bioconductor annotation
+#      repo; see the options(repos = ...) call in install-Rpkgs.R.
 #
 # ── The smoke test lives outside this file ──────────────────────────────────
 # The install layer below does run library() once, but only when that layer is
@@ -50,7 +57,7 @@
 FROM satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e
 
 LABEL org.opencontainers.image.source="https://github.com/CYL-Logan-Lab/docker-images"
-LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder"
+LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA with offline annotation DBs"
 LABEL org.opencontainers.image.base.name="satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e"
 
 ENV LC_ALL=C.UTF-8 \
