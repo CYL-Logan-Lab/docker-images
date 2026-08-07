@@ -12,11 +12,28 @@ PKG_PINNED <- c(
   viridis     = "0.6.5",
   matrixStats = "1.5.0",
   susieR      = "0.14.2",
-  digest      = "0.6.39",
-  coloc       = "6.0.1"
+  digest      = "0.6.39"
 )
 
 utils::install.packages(names(PKG_PINNED), dependencies = NA)
+
+coloc_commit <- Sys.getenv("R0_COLOC_SOURCE_COMMIT")
+stopifnot(identical(coloc_commit,
+                    "50fe5291fea7f8ab49823bd86747385d6e56870f"))
+coloc_tar <- tempfile(fileext = ".tar.gz")
+coloc_url <- sprintf(
+  "https://github.com/chr1swallace/coloc/archive/%s.tar.gz",
+  coloc_commit
+)
+utils::download.file(coloc_url, coloc_tar, mode = "wb", quiet = FALSE)
+install_status <- system2(
+  file.path(R.home("bin"), "R"),
+  c("CMD", "INSTALL", "--no-multiarch", shQuote(coloc_tar))
+)
+unlink(coloc_tar)
+stopifnot(install_status == 0L)
+
+PKG_PINNED <- c(PKG_PINNED, coloc = "6.0.1")
 
 got <- vapply(names(PKG_PINNED), function(package) {
   tryCatch(as.character(utils::packageVersion(package)),
