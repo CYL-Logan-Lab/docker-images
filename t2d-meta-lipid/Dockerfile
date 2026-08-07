@@ -29,7 +29,14 @@ ENV LC_ALL=C.UTF-8 \
 
 COPY install-Rpkgs.R /opt/install-Rpkgs.R
 
-RUN Rscript --vanilla /opt/install-Rpkgs.R \
+# GRCh37 -> GRCh38 point conversion is required by the R0 pilot. The versioned
+# UCSC binary is checksum-gated before it can enter a successful image.
+ADD --chmod=0755 https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64.v482/liftOver /usr/local/bin/liftOver
+
+RUN sha256sum /usr/local/bin/liftOver \
+ && echo '6a8deb81d26de3b5f25da69a1a5fa4754432817b768ca3430254109d2379efe0  /usr/local/bin/liftOver' | sha256sum -c - \
+ && liftOver 2>&1 | head -n 1 \
+ && Rscript --vanilla /opt/install-Rpkgs.R \
  && dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > /opt/system-manifest.tsv \
  && { \
       printf 'base_image\t%s\n' 'rocker/r-ver@sha256:fd4ccdd3a4a6f7ef805e2daeee2a0fe3bf126bc231f36351223baecf5a595a4c'; \
@@ -39,7 +46,10 @@ RUN Rscript --vanilla /opt/install-Rpkgs.R \
       printf 'coloc_version\t%s\n' '6.0.1'; \
       printf 'coloc_source_commit\t%s\n' "${R0_COLOC_SOURCE_COMMIT}"; \
       printf 'coloc_susie_R_sha256\t%s\n' '2fe466c74bdb3bedf91c5cd088ca5c3aa79e3f0733ef090839a4fefd078a93a9'; \
+      printf 'liftover_version\t%s\n' '482'; \
+      printf 'liftover_sha256\t%s\n' '6a8deb81d26de3b5f25da69a1a5fa4754432817b768ca3430254109d2379efe0'; \
     } > /opt/build-manifest.tsv \
+ && chmod 0555 /usr/local/bin/liftOver \
  && chmod 0444 /opt/install-Rpkgs.R /opt/Renv-manifest.tsv \
       /opt/system-manifest.tsv /opt/build-manifest.tsv \
  && groupadd --gid "${APP_GID}" analyst \
