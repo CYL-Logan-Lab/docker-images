@@ -107,16 +107,41 @@ invisible(lapply(names(PKG_PINNED), function(p)
 
 # Loadable does not mean usable either -- the annotation packages are SQLite
 # databases behind an R facade, and a truncated download gives you a package
-# that attaches cleanly and then fails on the first query. So query them once,
-# here, with a gene that is not going anywhere. GAPDH is entrez 2597; asking for
-# its GO terms exercises org.Hs.eg.db, GO.db and AnnotationDbi's select() path
-# in one call.
+# that attaches cleanly and then fails on the first query. So query all three
+# here, with a gene that is not going anywhere. GAPDH is entrez 2597.
+#
+# The three checks are chained rather than independent, and deliberately so: the
+# GO ids come out of org.Hs.eg.db and are then resolved in GO.db, so the pair has
+# to agree with each other. That is a much better integrity test than a row count
+# would be, and it needs no magic constant -- a "keys(GO.db) > N" style check
+# encodes a guess about how big the ontology is this release, and fails the build
+# when the guess is wrong rather than when the database is broken.
 gapdh <- AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db, keys = "GAPDH",
                                keytype = "SYMBOL", columns = c("ENTREZID", "GO"))
 stopifnot(nrow(gapdh) > 0, unique(gapdh$ENTREZID) == "2597")
-stopifnot(length(AnnotationDbi::keys(GO.db::GO.db)) > 40000,
-          length(AnnotationDbi::keys(reactome.db::reactome.db, "PATHID")) > 20000)
-cat("annotation databases queryable:", nrow(gapdh), "GO rows for GAPDH\n")
+
+go_ids <- unique(gapdh$GO[!is.na(gapdh$GO)])
+# Intersect before select(): the two databases ship separately and org.Hs.eg.db
+# occasionally still references a GO id that GO.db has retired, which would make
+# select() error out on an otherwise healthy pair. So the claim being asserted is
+# "nearly all of them resolve", which is the real consistency requirement, rather
+# than "every single one does".
+go_have <- intersect(go_ids, AnnotationDbi::keys(GO.db::GO.db))
+stopifnot(length(go_ids) > 0, length(go_have) >= 0.9 * length(go_ids))
+go_tm <- AnnotationDbi::select(GO.db::GO.db, keys = go_have,
+                               keytype = "GOID", columns = "TERM")
+stopifnot(nrow(go_tm) == length(go_have), !anyNA(go_tm$TERM), all(nzchar(go_tm$TERM)))
+
+# GAPDH is in glycolysis, so Reactome has to know about it. PATHNAME is prefixed
+# with the species, which is also the check that the human pathways are present
+# and not only some other organism's.
+rx <- AnnotationDbi::select(reactome.db::reactome.db, keys = "2597",
+                            keytype = "ENTREZID", columns = "PATHNAME")
+stopifnot(nrow(rx) > 0, any(grepl("^Homo sapiens", rx$PATHNAME)))
+
+cat("annotation databases queryable: GAPDH ->", length(go_ids), "GO ids,",
+    nrow(go_tm), "resolved in GO.db;", sum(grepl("^Homo sapiens", rx$PATHNAME)),
+    "human Reactome pathways\n")
 
 # ── Bake the manifest into the image ─────────────────────────────────────────
 # It records the **whole library**, not just the packages named above: Bioc
