@@ -184,6 +184,12 @@ jobs:
           set -euo pipefail
           if [[ "${PUBLISH}" == "true" ]]; then img="${REF}@${DIGEST}"; else img="${REF}:${SHA}"; fi
           echo "smoke testing ${img}"
+          if [[ -f "${IMAGE}/smoke-test.R" ]]; then
+            docker run --rm --network none \
+              --mount "type=bind,src=${PWD}/${IMAGE}/smoke-test.R,dst=/tmp/smoke-test.R,readonly" \
+              "${img}" Rscript --vanilla /tmp/smoke-test.R
+            exit 0
+          fi
           docker run --rm --network none "${img}" Rscript --vanilla -e '
             suppressPackageStartupMessages({
               library(Seurat); library(scDblFinder)
