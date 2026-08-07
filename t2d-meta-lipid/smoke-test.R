@@ -11,6 +11,9 @@ stopifnot(
   file.exists("/opt/Renv-manifest.tsv"),
   file.exists("/opt/system-manifest.tsv"),
   file.exists("/opt/build-manifest.tsv"),
+  nzchar(Sys.which("liftOver")),
+  identical(digest::digest(file = Sys.which("liftOver"), algo = "sha256"),
+            "6a8deb81d26de3b5f25da69a1a5fa4754432817b768ca3430254109d2379efe0"),
   identical(Sys.getenv("R0_COLOC_SOURCE_COMMIT"),
             "50fe5291fea7f8ab49823bd86747385d6e56870f")
 )
