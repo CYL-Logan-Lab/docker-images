@@ -17,6 +17,14 @@ stopifnot(
             "50fe5291fea7f8ab49823bd86747385d6e56870f")
 )
 
+curl_debian_version <- system2(
+  "dpkg-query", c("-W", "-f=${Version}", "curl"), stdout = TRUE, stderr = TRUE
+)
+stopifnot(
+  identical(curl_debian_version, "8.5.0-2ubuntu10.11"),
+  nzchar(Sys.which("curl"))
+)
+
 json_fixture <- '{"release":"26.06","rows":[{"id":"ENSG00000185619","count":1}],"ok":true}'
 parsed_json <- jsonlite::fromJSON(json_fixture, simplifyVector = TRUE)
 round_trip_json <- jsonlite::fromJSON(jsonlite::toJSON(parsed_json, auto_unbox = TRUE),
@@ -88,6 +96,7 @@ cat(
   "smoke ok:", R.version.string,
   "/ coloc", as.character(utils::packageVersion("coloc")),
   "/ jsonlite", as.character(utils::packageVersion("jsonlite")),
+  "/ curl Debian", curl_debian_version,
   "/ weighted H0-H4 max abs diff", format(max(abs(observed - expected)), digits = 17),
   "/ Python intentionally absent\n"
 )

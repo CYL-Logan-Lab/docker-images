@@ -16,6 +16,7 @@ LABEL org.opencontainers.image.base.name="rocker/r-ver@sha256:fd4ccdd3a4a6f7ef80
 ARG APP_UID=1000
 ARG APP_GID=1000
 ARG COLOC_SOURCE_COMMIT=50fe5291fea7f8ab49823bd86747385d6e56870f
+ARG CURL_DEB_VERSION=8.5.0-2ubuntu10.11
 
 ENV LC_ALL=C.UTF-8 \
     LANG=C.UTF-8 \
@@ -28,6 +29,12 @@ ENV LC_ALL=C.UTF-8 \
     R0_CRAN_REPO=https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06 \
     R0_COLOC_SOURCE_COMMIT=${COLOC_SOURCE_COMMIT}
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      "curl=${CURL_DEB_VERSION}" \
+      "libcurl4t64=${CURL_DEB_VERSION}" \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY install-Rpkgs.R /opt/install-Rpkgs.R
 
 RUN Rscript --vanilla /opt/install-Rpkgs.R \
@@ -39,6 +46,7 @@ RUN Rscript --vanilla /opt/install-Rpkgs.R \
       printf 'cran_snapshot\t%s\n' "${R0_CRAN_REPO}"; \
       printf 'coloc_version\t%s\n' '6.0.1'; \
       printf 'jsonlite_version\t%s\n' '2.0.0'; \
+      printf 'curl_debian_version\t%s\n' "${CURL_DEB_VERSION}"; \
       printf 'coloc_source_commit\t%s\n' "${R0_COLOC_SOURCE_COMMIT}"; \
       printf 'coloc_susie_R_sha256\t%s\n' '2fe466c74bdb3bedf91c5cd088ca5c3aa79e3f0733ef090839a4fefd078a93a9'; \
     } > /opt/build-manifest.tsv \
