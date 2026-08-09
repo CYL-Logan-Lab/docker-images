@@ -17,9 +17,11 @@ stopifnot(
             "50fe5291fea7f8ab49823bd86747385d6e56870f")
 )
 
-curl_debian_version <- system2(
-  "dpkg-query", c("-W", "-f=${Version}", "curl"), stdout = TRUE, stderr = TRUE
+system_manifest <- utils::read.delim(
+  "/opt/system-manifest.tsv", header = FALSE,
+  col.names = c("package", "version"), stringsAsFactors = FALSE
 )
+curl_debian_version <- system_manifest[system_manifest$package == "curl", "version"]
 stopifnot(
   identical(curl_debian_version, "8.5.0-2ubuntu10.11"),
   nzchar(Sys.which("curl"))
