@@ -1,5 +1,6 @@
 # R0 uses CRAN coloc 6.0.1 and regression-tests the behavior documented at
-# commit 50fe5291fea7f8ab49823bd86747385d6e56870f. No R1-R9 packages belong here.
+# commit 50fe5291fea7f8ab49823bd86747385d6e56870f. R7P adds only jsonlite for
+# structured parsing of archived official API responses.
 stopifnot(getRversion() == "4.5.2")
 
 cran_repo <- Sys.getenv("R0_CRAN_REPO")
@@ -12,7 +13,8 @@ PKG_PINNED <- c(
   viridis     = "0.6.5",
   matrixStats = "1.5.0",
   susieR      = "0.14.2",
-  digest      = "0.6.39"
+  digest      = "0.6.39",
+  jsonlite    = "2.0.0"
 )
 
 utils::install.packages(names(PKG_PINNED), dependencies = NA)
