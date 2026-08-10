@@ -14,7 +14,7 @@ ghcr.io/cyl-logan-lab/<directory>
 | Directory | Used by | Contents |
 |---|---|---|
 | [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder |
-| [`t2d-meta-lipid/`](t2d-meta-lipid/Dockerfile) | [CYL-Logan-Lab/Logan-T2D-Genomic](https://github.com/CYL-Logan-Lab/Logan-T2D-Genomic) | Minimal R0 environment: R 4.5.2 / coloc 6.0.1 |
+| [`t2d-meta-lipid/`](t2d-meta-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-adipose-depot-dysfunction](https://github.com/CYL-Logan-Lab/t2d-adipose-depot-dysfunction) | R 4.5.2 / coloc 6.0.1 / jsonlite 2.0.0 / curl 8.5.0 |
 
 ## How downstream projects reference an image
 

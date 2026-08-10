@@ -2,17 +2,41 @@ options(warn = 2)
 suppressPackageStartupMessages({
   library(coloc)
   library(digest)
+  library(jsonlite)
 })
 
 stopifnot(
   getRversion() == "4.5.2",
   utils::packageVersion("coloc") == "6.0.1",
   utils::packageVersion("digest") == "0.6.39",
+  utils::packageVersion("jsonlite") == "2.0.0",
   file.exists("/opt/Renv-manifest.tsv"),
   file.exists("/opt/system-manifest.tsv"),
   file.exists("/opt/build-manifest.tsv"),
   identical(Sys.getenv("R0_COLOC_SOURCE_COMMIT"),
             "50fe5291fea7f8ab49823bd86747385d6e56870f")
+)
+
+system_manifest <- utils::read.delim(
+  "/opt/system-manifest.tsv", header = FALSE,
+  col.names = c("package", "version"), stringsAsFactors = FALSE
+)
+curl_debian_version <- system_manifest[system_manifest$package == "curl", "version"]
+stopifnot(
+  identical(curl_debian_version, "8.5.0-2ubuntu10.11"),
+  nzchar(Sys.which("curl"))
+)
+
+json_fixture <- '{"release":"26.06","rows":[{"id":"ENSG00000185619","count":1}],"ok":true}'
+parsed_json <- jsonlite::fromJSON(json_fixture, simplifyVector = TRUE)
+round_trip_json <- jsonlite::fromJSON(jsonlite::toJSON(parsed_json, auto_unbox = TRUE),
+                                      simplifyVector = TRUE)
+stopifnot(
+  identical(parsed_json$release, "26.06"),
+  identical(parsed_json$rows$id, "ENSG00000185619"),
+  identical(parsed_json$rows$count, 1L),
+  isTRUE(parsed_json$ok),
+  identical(parsed_json, round_trip_json)
 )
 
 bf1 <- c(v1 = -0.8, v2 = 0.3, v3 = 1.1)
@@ -73,6 +97,8 @@ stopifnot(
 cat(
   "smoke ok:", R.version.string,
   "/ coloc", as.character(utils::packageVersion("coloc")),
+  "/ jsonlite", as.character(utils::packageVersion("jsonlite")),
+  "/ curl Debian", curl_debian_version,
   "/ weighted H0-H4 max abs diff", format(max(abs(observed - expected)), digits = 17),
   "/ Python intentionally absent\n"
 )
