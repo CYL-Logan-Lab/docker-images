@@ -188,6 +188,7 @@ jobs:
             suppressPackageStartupMessages({
               library(Seurat); library(scDblFinder)
               library(clusterProfiler); library(org.Hs.eg.db); library(ReactomePA)
+              library(CellChat); library(nichenetr)
             })
             stopifnot(file.exists("/opt/Renv-manifest.tsv"))
             # --network none is the point of this line: enrichment must work with
@@ -214,12 +215,110 @@ jobs:
             rk <- setNames(seq(2, -2, length.out = length(eg$ENTREZID)), eg$ENTREZID)
             fg <- fgsea::fgseaSimple(list(top = eg$ENTREZID[1:5]), rk, minSize = 2, nperm = 200)
             stopifnot(nrow(fg) == 1, is.finite(fg$ES))
+            # ---- cell-cell communication stack, all of it under --network none ----
+            # CellChatDB ships inside the package; this is what verifies that claim.
+            db <- CellChatDB.human$interaction
+            stopifnot(is.data.frame(db), nrow(db) > 0,
+                      all(c("SPP1", "CSF1", "PDGFA") %in% db$ligand))
+            # A loadable CellChat says nothing about whether inference runs: the
+            # probability step is C++ over a database subset and is where a broken
+            # build actually shows. So run the whole chain on a toy object built to
+            # have a known answer -- group A carries the ligands, B the receptors,
+            # so A -> B must come out non-empty. The genes that carry the signal
+            # are fixed by name; only the background genes are drawn from the DB,
+            # which is what keeps the object big enough for the filtering steps to
+            # have something to do.
+            set.seed(1)
+            lig <- c("SPP1", "CSF1", "TGFB1", "PDGFA")
+            rec <- c("CD44", "CSF1R", "TGFBR1", "TGFBR2", "PDGFRA", "PDGFRB")
+            fil <- setdiff(unique(c(db$ligand, db$receptor)), c(lig, rec))
+            genes <- c(lig, rec, grep("_", fil, invert = TRUE, value = TRUE)[1:200])
+            n <- 40L
+            m <- matrix(rpois(length(genes) * 2L * n, lambda = 2), nrow = length(genes),
+                        dimnames = list(genes, paste0("c", seq_len(2L * n))))
+            m[lig, seq_len(n)] <- m[lig, seq_len(n)] + 60L
+            m[rec, -seq_len(n)] <- m[rec, -seq_len(n)] + 60L
+            dat <- log1p(sweep(m, 2, colSums(m), "/") * 1e4)
+            meta <- data.frame(labels = factor(rep(c("A", "B"), each = n)),
+                               row.names = colnames(m))
+            cc <- createCellChat(object = dat, meta = meta, group.by = "labels")
+            cc@DB <- CellChatDB.human
+            cc <- subsetData(cc)
+            cc <- identifyOverExpressedGenes(cc, thresh.p = 1)
+            cc <- identifyOverExpressedInteractions(cc)
+            cc <- computeCommunProb(cc, type = "truncatedMean", trim = 0.1)
+            cc <- filterCommunication(cc, min.cells = 10)
+            cc <- aggregateNet(cc)
+            net <- cc@net$count
+            stopifnot(is.matrix(net), identical(dim(net), c(2L, 2L)),
+                      net["A", "B"] > 0, nrow(subsetCommunication(cc)) > 0)
+            # NicheNet priors are the one database not shipped by its package, so
+            # they were baked in by the Dockerfile. Read from the env var the image
+            # sets rather than a literal path: a missing ENV then fails here too.
+            prior <- Sys.getenv("NICHENET_PRIOR_DIR")
+            stopifnot(nzchar(prior))
+            ltm <- readRDS(file.path(prior, "ligand_target_matrix_nsga2r_final.rds"))
+            # Orientation is targets x ligands. Asserting only that ligands are in
+            # colnames would not catch a transposed matrix -- ligands are genes and
+            # so appear in both margins. Targets appearing in rownames but NOT all
+            # in colnames is the pair of checks that pins it.
+            stopifnot(is.matrix(ltm), nrow(ltm) > 1e4, ncol(ltm) > 1e3,
+                      all(c("SPP1", "CSF1", "TGFB1") %in% colnames(ltm)),
+                      all(c("CD44", "CSF1R", "COL1A1") %in% rownames(ltm)),
+                      !all(c("CD44", "CSF1R", "COL1A1") %in% colnames(ltm)),
+                      min(ltm[, "SPP1"]) >= 0)
+            lr <- readRDS(file.path(prior, "lr_network_human_21122021.rds"))
+            stopifnot(is.data.frame(lr), nrow(lr) > 0,
+                      all(c("from", "to") %in% colnames(lr)),
+                      any(lr$from == "SPP1" & lr$to == "CD44"),
+                      any(lr$from == "CSF1" & lr$to == "CSF1R"))
+            # Reading the priors is not the same as nichenetr being able to use
+            # them, so call the function the downstream step will call, on a
+            # question whose answer is fixed by construction: background = the
+            # 2000 highest-scoring targets of SPP1, geneset = the top 100 of
+            # those. SPP1 then separates the geneset perfectly, so its AUROC is
+            # exactly 1 -- provided score[100] is strictly above score[101],
+            # which is asserted rather than assumed because a tie at that
+            # boundary is the one thing that would break the equality.
+            #
+            # AUROC and not pearson: pearson correlates against the binary
+            # membership vector and is NOT maximised by the ligand that defined
+            # the set (APOE beats SPP1 on it), so a pearson assertion would have
+            # an expected value that was guessed rather than derived.
+            #
+            # No sample() anywhere here, deliberately. An earlier version drew a
+            # random background and justified it as "the property holds for any
+            # subset". That justification is false: subsets exist where another
+            # candidate reaches AUROC 1 and SPP1 lands just below it (TNF 1.0 vs
+            # SPP1 0.9999974 on one such draw). Since this runs unattended in CI,
+            # the check is deterministic instead -- identical numbers on every
+            # run, so it cannot pass today and flake next month.
+            cand <- intersect(c("SPP1", "CSF1", "TGFB1", "PDGFA", "IL34", "GAS6",
+                                "CXCL12", "APOE", "FN1", "IL6", "TNF"), colnames(ltm))
+            sc <- sort(ltm[, "SPP1"], decreasing = TRUE)
+            stopifnot(length(cand) > 5, sc[[100]] > sc[[101]])
+            bg <- names(sc)[1:2000]
+            gs <- names(sc)[1:100]
+            act <- nichenetr::predict_ligand_activities(
+              geneset = gs, background_expressed_genes = bg,
+              ligand_target_matrix = ltm[bg, cand, drop = FALSE],
+              potential_ligands = cand)
+            au <- setNames(act$auroc, act$test_ligand)
+            stopifnot(nrow(act) == length(cand), all(is.finite(au)),
+                      identical(sort(names(au)), sort(cand)),
+                      au[["SPP1"]] == 1, sum(au >= au[["SPP1"]]) == 1L)
             cat("smoke ok:", R.version.string,
                 "/ Seurat", as.character(packageVersion("Seurat")),
                 "/ scDblFinder", as.character(packageVersion("scDblFinder")),
                 "/ clusterProfiler", as.character(packageVersion("clusterProfiler")),
                 "/ offline enrichGO", nrow(as.data.frame(go)), "terms",
-                "/ enrichPathway", nrow(as.data.frame(re)), "pathways\n")'
+                "/ enrichPathway", nrow(as.data.frame(re)), "pathways",
+                "/ CellChat", as.character(packageVersion("CellChat")),
+                "with", nrow(db), "interactions, toy A->B", net["A", "B"],
+                "/ nichenetr", as.character(packageVersion("nichenetr")),
+                "priors", nrow(ltm), "targets x", ncol(ltm), "ligands,",
+                nrow(lr), "LR pairs, SPP1 auroc", au[["SPP1"]],
+                "vs runner-up", round(max(au[names(au) != "SPP1"]), 4), "\n")'
 
       - name: Report digest
         shell: bash

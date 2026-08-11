@@ -1,8 +1,9 @@
 # Package installation for the image built by the Dockerfile next to this file.
 # It ships inside the image at /opt/install-Rpkgs.R, so "how was this
 # environment built" can be answered from inside the container. Read the
-# Dockerfile header first: it explains the three pinning layers this script
-# implements.
+# Dockerfile header first: it explains the four pinning layers, of which this
+# file implements the first three. Layer 4 (the two GitHub-only packages) runs
+# after this one, in install-github-Rpkgs.R.
 
 # ── Assertion for pin 1: the base image must still be that base image ────────
 # FROM names a digest, so normally nothing moves. But the Dockerfile header
@@ -13,6 +14,12 @@ stopifnot(
   getRversion() == "4.5.2",
   utils::packageVersion("Seurat") == "5.5.1"
 )
+
+# Loaded here, called at the end: it asserts the versions that must not move
+# while packages are installed on top, and one of them (scDblFinder) is
+# installed by this very script, so the check is only meaningful once this layer
+# has finished. See Rlib-invariants.R for what is being defended and why.
+source("/opt/Rlib-invariants.R")
 
 # install.packages rather than BiocManager::install: all three repositories are
 # attached to `repos`, so the CRAN dependencies of Bioc packages also land in
@@ -26,10 +33,21 @@ stopifnot(
 # repository, so without this line install.packages() reports them as
 # unavailable and the assertion block below is what turns that into a build
 # failure. It is pinned to the same 3.22 release as BIOC.
+#
+# timeout is not cosmetic. R defaults to 60 seconds *per download*, and the
+# annotation tarballs are the largest things fetched here -- reactome.db 1.95.0
+# is a few hundred MB and bioconductor.org redirects it to an OSN bucket. A
+# dry run of this exact package list hit precisely that: "URL
+# .../reactome.db_1.95.0.tar.gz: Timeout of 60 seconds was reached", then
+# "download of package reactome.db failed". Because install.packages() only
+# warns, the build would have carried on and failed later at the version
+# assertion, reporting a missing package instead of a slow network. Raising the
+# timeout does not paper over a real failure: an unreachable repository still
+# fails, just not on file size.
 options(repos = c(BIOC = "https://bioconductor.org/packages/3.22/bioc",
                   BIOCANN = "https://bioconductor.org/packages/3.22/data/annotation",
                   CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06"),
-        Ncpus = 4)
+        Ncpus = 4, timeout = 1200)
 
 # Listing them in dependency order is for humans; the real order comes from
 # install.packages resolving dependencies itself.
@@ -73,7 +91,78 @@ PKG_PINNED <- c(
   clusterProfiler = "4.18.4",
   ReactomePA      = "1.54.0",
   enrichplot      = "1.30.5",
-  fgsea           = "1.36.2"
+  fgsea           = "1.36.2",
+
+  # ── Cell-cell communication (added for the ASPC-myeloid state step) ────────
+  # SingleCellSignalR 2.0.1 was intended here as a *second, independent*
+  # ligand-receptor implementation alongside CellChat, and is deliberately
+  # absent. Since 2.x it is a thin wrapper over BulkSignalR, and BulkSignalR
+  # does not ship the LRdb: its .onLoad() downloads LRdb, Reactome, GO-BP and
+  # Network from https://partage-dev.montp.inserm.fr:9192/CBSB/ into a
+  # BiocFileCache (and its cache helper sets ssl_verifypeer = 0L,
+  # ssl_verifyhost = 0L, i.e. with TLS verification switched off). Attaching the
+  # package therefore needs the network, and the database version would depend
+  # on the day the analysis ran -- the same defect that disqualified liana, and
+  # the opposite of what every other database in this image does.
+  #
+  # It also fails to build here for a shallower reason -- BulkSignalR pulls in
+  # SpatialExperiment -> magick, which needs libmagick++-dev, absent from the
+  # base image. That one is fixable with an apt line. It was not fixed, because
+  # fixing the build would not fix the provenance.
+  #
+  # Consequence, stated rather than hidden: CellChat is the only ligand-receptor
+  # *scoring* implementation in this image. What remains is a cross-check at the
+  # resource level -- NicheNet's lr_network prior (baked in below) assembles its
+  # 4986 pairs from a different starting point than CellChatDB does, so a
+  # reported pair can be asked whether both resources contain it.
+  # Do not oversell that check: 4496 of those 4986 pairs carry database ==
+  # "omnipath", i.e. the prior is mostly one aggregator, whereas CellChatDB is
+  # curated by its authors from KEGG plus literature. Different inclusion
+  # criteria, not independent evidence -- agreement is weak support and
+  # disagreement is worth looking at, which is all it is used for.
+  #
+  # ComplexHeatmap and circlize are dependencies of CellChat and nichenetr, but
+  # they are pinned by name rather than left to dependency resolution because
+  # they draw the figures -- a silent bump changes plots that end up in a
+  # manuscript.
+  #
+  # The rest of this block is the dependency closure of CellChat and nichenetr
+  # that the base image does not already carry. They are listed explicitly for
+  # one specific reason: the GitHub layer installs a package from a local
+  # directory with repos = NULL, which does not resolve dependencies at all, so
+  # anything missing there is a build failure with a package name rather than
+  # something quietly pulled from an unpinned source. Naming them here also
+  # means their versions are asserted rather than merely recorded.
+  #
+  # Note which packages are deliberately NOT named: everything the base image
+  # already ships (irlba, igraph, Rcpp, plotly, future, dplyr, ...). Naming an
+  # already-installed package would make install.packages() replace it with the
+  # snapshot's version -- the snapshot carries Matrix 1.7-6 against the image's
+  # 1.7-5, and irlba/igraph sit under every PCA and clustering result the
+  # downstream project has already produced. Missing dependencies are installed;
+  # satisfied ones are left alone. Rlib-invariants.R asserts that this held.
+  ComplexHeatmap = "2.26.1",
+
+  circlize     = "0.4.18",
+  colorspace   = "2.1-3",
+  collapse     = "2.1.7",
+  ggnetwork    = "0.5.14",
+  ggpubr       = "1.0.0",
+  ggalluvial   = "0.12.6",
+  sna          = "2.8",
+  svglite      = "2.2.2",
+  NMF          = "0.28",
+  shape        = "1.4.6.1",
+  shadowtext   = "0.1.6",
+  DiagrammeR   = "1.0.12",
+  mlrMBO       = "1.1.6",
+  emoa         = "0.5-3",
+  DiceKriging  = "1.6.1",
+  parallelMap  = "1.5.1",
+  caret        = "7.0-1",
+  randomForest = "4.7-1.2",
+  Hmisc        = "5.2-6",
+  fdrtool      = "1.2.18"
 )
 
 install.packages(names(PKG_PINNED))
@@ -84,10 +173,21 @@ install.packages(names(PKG_PINNED))
 # succeed, the image would ship, and the missing package would surface months
 # later in the middle of an analysis. The check covers both "did it install"
 # and "is it the stated version".
+#
+# Comparison goes through numeric_version rather than string equality: R
+# normalises the separator when printing, so a package whose DESCRIPTION says
+# "2.1-3" reads back as "2.1.3" and a string compare would report a mismatch
+# that does not exist. Versions above are written the way the repository index
+# spells them, so that they can be checked against it by eye.
 got <- vapply(names(PKG_PINNED), function(p)
   tryCatch(as.character(utils::packageVersion(p)),
            error = function(e) NA_character_), character(1))
-bad <- is.na(got) | got != PKG_PINNED
+# Two steps rather than `is.na(got) | ...`: numeric_version() errors on NA
+# instead of propagating it, which would abort here with a parse error instead
+# of reaching the message below that names the missing package.
+present <- !is.na(got)
+bad <- !present
+bad[present] <- numeric_version(got[present]) != numeric_version(PKG_PINNED[present])
 if (any(bad)) {
   stop("package versions disagree with the Dockerfile:\n",
        paste(sprintf("  %-14s expected %-10s got %s",
@@ -143,24 +243,13 @@ cat("annotation databases queryable: GAPDH ->", length(go_ids), "GO ids,",
     nrow(go_tm), "resolved in GO.db;", sum(grepl("^Homo sapiens", rx$PATHNAME)),
     "human Reactome pathways\n")
 
-# ── Bake the manifest into the image ─────────────────────────────────────────
-# It records the **whole library**, not just the packages named above: Bioc
-# drags in a chain of transitive dependencies, and those are exactly what the
-# assertions do not cover. The manifest cannot hold them still, but it can at
-# least answer afterwards "which version was in there". When something breaks,
-# the culprit is usually one of the packages nobody named.
-bioc <- tryCatch(as.character(BiocManager::version()),
-                 error = function(e) "(BiocManager not in the image)")
-ip <- utils::installed.packages()[, c("Package", "Version", "LibPath"), drop = FALSE]
-ip <- ip[order(ip[, "Package"]), , drop = FALSE]
-dir.create("/opt", showWarnings = FALSE)
-writeLines(c("# R package manifest for this image, generated at build time by /opt/install-Rpkgs.R",
-             paste0("# R: ", R.version.string),
-             paste0("# BiocManager: ", bioc),
-             paste0("# CRAN: ", getOption("repos")[["CRAN"]]),
-             paste0("# Bioc repo: ", getOption("repos")[["BIOC"]]),
-             paste0("# Bioc annotation repo: ", getOption("repos")[["BIOCANN"]]),
-             "package\tversion\tlibpath",
-             apply(ip, 1, paste, collapse = "\t")),
-           "/opt/Renv-manifest.tsv")
-cat("manifest written to /opt/Renv-manifest.tsv,", nrow(ip), "packages\n")
+# ── Nothing above was allowed to move the numerical chain ────────────────────
+# Everything installed here brought its own dependency closure with it, and
+# install.packages() upgrades an already-installed package without asking
+# whenever some new dependency declares a higher minimum. This is where that
+# gets caught. See Rlib-invariants.R.
+assert_invariants("after the CRAN/Bioc layer")
+
+# The manifest is written by install-github-Rpkgs.R, not here: that layer runs
+# last, and a manifest written at this point would not list the packages it
+# installs.

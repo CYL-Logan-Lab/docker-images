@@ -9,7 +9,7 @@
 # its own claims (version mismatch fails the build). It does NOT promise that
 # rebuilding six months from now yields a byte-identical image -- see pin 3.
 #
-# ── Three pinning layers ────────────────────────────────────────────────────
+# ── Four pinning layers ─────────────────────────────────────────────────────
 #   1. Base image taken by **OCI manifest digest**, not by the :5.5.1 tag. A tag
 #      is a mutable reference: the maintainer re-pushes it and you silently get
 #      a different image. A digest cannot change. R 4.5.2 / Seurat 5.5.1 come
@@ -32,9 +32,15 @@
 #      environment".
 #      A failed assertion means upstream moved: write the new version into
 #      PKG_PINNED and rebuild -- do **not** delete the assertion.
+#   4. **GitHub packages by commit SHA**, not by tag or branch. Both of the
+#      cell-cell communication packages exist on neither CRAN nor Bioconductor
+#      (checked against the Bioc 3.22 PACKAGES index), so they have to be
+#      installed from source repositories -- which have no snapshot service at
+#      all and whose tags can be moved. A commit SHA is the only immutable
+#      reference GitHub offers. See install-github-Rpkgs.R.
 #
 # ── Why add anything on top of satijalab/seurat ─────────────────────────────
-# Two reasons, and the base image supplies neither.
+# Three reasons, and the base image supplies none of them.
 #   1. Nucleus-level doublet scoring with scDblFinder, plus its dependencies
 #      (scran, scuttle, scater, bluster, edgeR, BiocNeighbors, BiocSingular,
 #      metapod, ScaledMatrix) and xgboost from CRAN.
@@ -45,9 +51,26 @@
 #      version is fixed by this image's digest -- same guarantee as the code.
 #      Note this pulls in a *third* repository, the Bioconductor annotation
 #      repo; see the options(repos = ...) call in install-Rpkgs.R.
+#   3. Ligand-receptor / cell-cell communication between ASPC and myeloid cell
+#      states: CellChat and nichenetr, plus what they draw with (ComplexHeatmap,
+#      circlize, NMF, ggalluvial).
+#      Same offline requirement as the gene sets, for the same reason: an
+#      interaction database fetched at analysis time makes the result depend on
+#      the day the analysis ran. That requirement decided which packages are
+#      here -- liana and SingleCellSignalR were both dropped for failing it, for
+#      reasons recorded where each would have been installed. CellChatDB ships
+#      inside its package; NicheNet's prior networks do not, so they are
+#      downloaded here and checksummed -- see the layer below.
+#
+# ── The NicheNet priors are downloaded before the R layers, deliberately ────
+# 420 MB from Zenodo. Putting it first means editing an installer does not
+# re-download it: the build cache invalidates a layer and everything after it,
+# never anything before. The URLs and their md5 sums are pinned in
+# nichenet-priors.md5 -- Zenodo records are immutable once published, so the
+# checksum is a real integrity check rather than a guess about what is there.
 #
 # ── The smoke test lives outside this file ──────────────────────────────────
-# The install layer below does run library() once, but only when that layer is
+# The install layers below do run library() once, but only when that layer is
 # actually built: a cache hit skips the whole layer, and putting the test in its
 # own RUN does not change that (cache matching walks parent layers in order).
 # For "every CI run really verifies it", the test has to run outside the
@@ -57,18 +80,55 @@
 FROM satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e
 
 LABEL org.opencontainers.image.source="https://github.com/CYL-Logan-Lab/docker-images"
-LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA with offline annotation DBs"
+LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr, all with offline databases"
 LABEL org.opencontainers.image.base.name="satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e"
 
 ENV LC_ALL=C.UTF-8 \
     LANG=C.UTF-8
 
-# The installer is its own file rather than a heredoc: as plain install-Rpkgs.R
-# it gets R syntax highlighting, linting and `Rscript -e 'parse(...)'` for free,
-# none of which work on text embedded in a Dockerfile. Build-cache behaviour is
-# the same either way -- the layer key is the file's content, so editing the
-# script invalidates the install layer and nothing else does.
-COPY install-Rpkgs.R /opt/install-Rpkgs.R
+# Analysis code reads the priors from here rather than hard-coding /opt/nichenet,
+# so the path is stated once and is visible from inside a running container.
+ENV NICHENET_PRIOR_DIR=/opt/nichenet
 
-RUN Rscript --vanilla /opt/install-Rpkgs.R \
- && chmod 0444 /opt/Renv-manifest.tsv /opt/install-Rpkgs.R
+# Zenodo record 7074291, "NicheNet-v2: final networks and ligand-target
+# matrices". Only the six human files; the mouse set is another 300 MB that
+# nothing here will ever read.
+#
+# --fail matters: without it curl writes an HTTP error page to the output file
+# and exits 0, and the failure would surface as a corrupt .rds months later.
+# md5sum -c is the second line of defence and the one that catches a truncated
+# transfer, which --fail does not.
+COPY nichenet-priors.md5 /opt/nichenet/nichenet-priors.md5
+RUN set -eu; \
+    cd /opt/nichenet; \
+    while read -r _ f; do \
+      curl -sSfL -o "$f" "https://zenodo.org/records/7074291/files/${f}?download=1"; \
+    done < nichenet-priors.md5; \
+    md5sum -c nichenet-priors.md5; \
+    chmod 0444 /opt/nichenet/*
+
+# The installers are their own files rather than heredocs: as plain .R they get
+# R syntax highlighting, linting and `Rscript -e 'parse(...)'` for free, none of
+# which work on text embedded in a Dockerfile. Build-cache behaviour is the same
+# either way -- the layer key is the file's content, so editing a script
+# invalidates its install layer and nothing else does.
+#
+# CRAN/Bioc and GitHub are two layers rather than one because they fail for
+# different reasons and iterate at different speeds: the GitHub packages are
+# built from source against whatever this base image ships, which is the part
+# that actually breaks, and keeping it last means a failed retry does not
+# reinstall the ~60 packages that already succeeded.
+#
+# Rlib-invariants.R is sourced by both: it names the packages whose versions must
+# not move, and both installers assert them after running. Most of them come from
+# the base image; scDblFinder is installed by install-Rpkgs.R and then held still
+# for the same reason, because its doublet scores are written into result tables.
+COPY Rlib-invariants.R /opt/Rlib-invariants.R
+
+COPY install-Rpkgs.R /opt/install-Rpkgs.R
+RUN Rscript --vanilla /opt/install-Rpkgs.R
+
+COPY install-github-Rpkgs.R /opt/install-github-Rpkgs.R
+RUN Rscript --vanilla /opt/install-github-Rpkgs.R \
+ && chmod 0444 /opt/Renv-manifest.tsv /opt/Rlib-invariants.R \
+               /opt/install-Rpkgs.R /opt/install-github-Rpkgs.R
