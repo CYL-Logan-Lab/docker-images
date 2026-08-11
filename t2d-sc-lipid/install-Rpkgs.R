@@ -114,10 +114,16 @@ PKG_PINNED <- c(
   # on the day the analysis ran -- the same defect that disqualified liana, and
   # the opposite of what every other database in this image does.
   #
-  # It also fails to build here for a shallower reason -- BulkSignalR pulls in
+  # It also failed to build here for a shallower reason -- BulkSignalR pulls in
   # SpatialExperiment -> magick, which needs libmagick++-dev, absent from the
-  # base image. That one is fixable with an apt line. It was not fixed, because
-  # fixing the build would not fix the provenance.
+  # base image. That one was fixable with an apt line and was deliberately not
+  # fixed, because fixing the build would not fix the provenance.
+  #
+  # v5 update: the apt line now exists anyway, because GSVA Imports
+  # SpatialExperiment too and GSVA is wanted (see the Dockerfile's apt layer).
+  # This does not revive SingleCellSignalR. The reason it is absent was never
+  # the missing header -- it is that attaching it downloads its databases at
+  # run time. That reason is untouched.
   #
   # Consequence, stated rather than hidden: CellChat is the only ligand-receptor
   # *scoring* implementation in this image. What remains is a cross-check at the

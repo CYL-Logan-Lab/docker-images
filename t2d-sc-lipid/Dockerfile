@@ -120,8 +120,8 @@ ENV NICHENET_PRIOR_DIR=/opt/nichenet
 #
 # The base image has no curl -- the first CI build of this layer failed with
 # "/bin/sh: 1: curl: not found", which no amount of local reasoning had caught,
-# so it is installed here as build-time transport. This is the only apt install
-# in the file and it is deliberately not version-pinned: pinning a package
+# so it is installed here as build-time transport. This is the only apt layer in
+# the file and it is deliberately not version-pinned: pinning a package
 # version in a rolling Ubuntu archive breaks the build the day that version is
 # superseded, and durable package-level reproducibility would need an Ubuntu
 # snapshot repository, not a version string. What the pinning discipline
@@ -142,10 +142,35 @@ ENV NICHENET_PRIOR_DIR=/opt/nichenet
 # --retry covers the third-party half of this: Zenodo is not our infrastructure
 # and the largest file here is 262 MB, so a transient 5xx should cost a retry
 # rather than a build.
+#
+# libmagick++-dev is the second package here, and it is present for a reason
+# worth writing down because nothing in the analysis wants ImageMagick. The
+# chain is: GSVA 2.4.9 Imports SpatialExperiment 1.20.0, which Imports magick,
+# whose configure step needs Magick++.h. All three are hard Imports, not
+# Suggests, so there is no dependency flag that avoids it -- the v5 build failed
+# at exactly this point ("fatal error: Magick++.h: No such file or directory",
+# run 31491127807). GSVA is wanted for the bulk half of the program layer:
+# scoring a gene program across the METSIM cohorts is ssGSEA's job, and it is
+# the method a reader will expect there. SpatialExperiment only reaches for
+# magick when it reads spatial images, which this project never does; the
+# dependency is structural, not functional.
+#
+# The alternative was dropping GSVA and scoring programs with UCell (already in
+# this image, rank-based, works on bulk). Rejected: that trades the field's
+# standard method for an unconventional one to avoid installing a leaf library.
+# Keeping both means the two scorings can be compared, which is worth more.
+#
+# Blast radius, stated the same way as curl's above: unlike curl -- which
+# upgrades libcurl4t64, a library four already-built R packages link at runtime
+# -- ImageMagick is not linked by anything else in this image. The only consumer
+# is the magick package built in the next layer. The cost is size, not risk, and
+# it is not small: the -dev package pulls the ImageMagick 6 runtime plus headers.
+# The measured delta is recorded in the v5 entry of the project's decision log
+# rather than guessed at here.
 COPY nichenet-priors.md5 /opt/nichenet/nichenet-priors.md5
 RUN set -eu; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl; \
+    apt-get install -y --no-install-recommends curl libmagick++-dev; \
     rm -rf /var/lib/apt/lists/*; \
     cd /opt/nichenet; \
     while read -r _ f; do \
