@@ -185,6 +185,19 @@ jobs:
       # Hence the grep. The step's exit code is not sufficient evidence that the
       # test ran -- the whole failure above was a command that exits 0 while
       # doing nothing -- so the script prints a sentinel and this asserts it.
+      #
+      # Every image directory therefore owns a `smoke.R` that ends in a line
+      # starting "smoke ok:", and the file is required rather than optional.
+      # t2d-meta-lipid arrived on main calling its copy `smoke-test.R`, mounted
+      # only when present with a fallback to the `-e` form; it was renamed here
+      # so there is one name and one rule. Optional is the wrong shape for it.
+      # Not because the fallback failed to run -- that payload encoded to 4085,
+      # well under the limit, and its assertions were real -- but because it was
+      # one generic test standing in for whatever image was missing its own:
+      # t2d-sc-lipid would quietly go back to the narrower pre-v4 checks and
+      # report green, and t2d-meta-lipid would fail on packages it does not
+      # ship. A missing smoke.R should be a hard failure, not a silent downgrade
+      # to something that no longer tests what the image actually contains.
       - name: Smoke test the image this build produced
         shell: bash
         env:
