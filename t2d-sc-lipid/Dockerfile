@@ -32,15 +32,15 @@
 #      environment".
 #      A failed assertion means upstream moved: write the new version into
 #      PKG_PINNED and rebuild -- do **not** delete the assertion.
-#   4. **GitHub packages by commit SHA**, not by tag or branch. Both of the
-#      cell-cell communication packages exist on neither CRAN nor Bioconductor
-#      (checked against the Bioc 3.22 PACKAGES index), so they have to be
+#   4. **GitHub packages by commit SHA**, not by tag or branch. Three packages
+#      here exist on neither CRAN nor Bioconductor (checked against the Bioc
+#      3.22 PACKAGES index): CellChat, nichenetr, and hdWGCNA. They have to be
 #      installed from source repositories -- which have no snapshot service at
 #      all and whose tags can be moved. A commit SHA is the only immutable
 #      reference GitHub offers. See install-github-Rpkgs.R.
 #
 # ── Why add anything on top of satijalab/seurat ─────────────────────────────
-# Three reasons, and the base image supplies none of them.
+# Four reasons, and the base image supplies none of them.
 #   1. Nucleus-level doublet scoring with scDblFinder, plus its dependencies
 #      (scran, scuttle, scater, bluster, edgeR, BiocNeighbors, BiocSingular,
 #      metapod, ScaledMatrix) and xgboost from CRAN.
@@ -61,6 +61,25 @@
 #      reasons recorded where each would have been installed. CellChatDB ships
 #      inside its package; NicheNet's prior networks do not, so they are
 #      downloaded here and checksummed -- see the layer below.
+#   4. **Gene programs rather than cell proportions** (added in v5). The project
+#      found cluster proportions to be unstable across donors and moved the
+#      question from "how many cells of type X" to "how much of program P",
+#      which needs a co-expression layer (WGCNA + hdWGCNA and their closure),
+#      two scoring routes so a module can be carried from nuclei to bulk arrays
+#      (UCell per cell, GSVA/ssGSEA per sample), a TF-activity layer (decoupleR
+#      with dorothea's regulons), a trajectory layer (slingshot -- and *not*
+#      RNA velocity, which the data cannot support: no BAMs, no unspliced
+#      counts), and the bulk side of the bridge (sva, glmnet, and hgu219.db for
+#      the HG-U219 array the METSIM bulk cohort was run on).
+#      The offline rule decided membership here too, exactly as it did in 3:
+#      dorothea is installed because its regulons ship as an .rda inside the
+#      package, whereas decoupleR's own CollecTRI loader would fetch them
+#      through OmnipathR at call time. That pulls in a *fourth* repository, the
+#      Bioconductor experiment-data repo. SCENIC/RcisTarget (multi-GB motif
+#      rankings fetched at analysis time), msigdbr (network at call time; the
+#      Hallmark GMT is already sha256-pinned in the downstream repo) and
+#      monocle3 were all excluded for the same reason or for closure size --
+#      recorded where each would have been installed.
 #
 # ── The NicheNet priors are downloaded before the R layers, deliberately ────
 # 420 MB from Zenodo. Putting it first means editing an installer does not
@@ -80,7 +99,7 @@
 FROM satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e
 
 LABEL org.opencontainers.image.source="https://github.com/CYL-Logan-Lab/docker-images"
-LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr, all with offline databases"
+LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr + hdWGCNA/decoupleR/slingshot/UCell/GSVA, all with offline databases"
 LABEL org.opencontainers.image.base.name="satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e"
 
 ENV LC_ALL=C.UTF-8 \
@@ -101,8 +120,8 @@ ENV NICHENET_PRIOR_DIR=/opt/nichenet
 #
 # The base image has no curl -- the first CI build of this layer failed with
 # "/bin/sh: 1: curl: not found", which no amount of local reasoning had caught,
-# so it is installed here as build-time transport. This is the only apt install
-# in the file and it is deliberately not version-pinned: pinning a package
+# so it is installed here as build-time transport. This is the only apt layer in
+# the file and it is deliberately not version-pinned: pinning a package
 # version in a rolling Ubuntu archive breaks the build the day that version is
 # superseded, and durable package-level reproducibility would need an Ubuntu
 # snapshot repository, not a version string. What the pinning discipline
@@ -123,10 +142,35 @@ ENV NICHENET_PRIOR_DIR=/opt/nichenet
 # --retry covers the third-party half of this: Zenodo is not our infrastructure
 # and the largest file here is 262 MB, so a transient 5xx should cost a retry
 # rather than a build.
+#
+# libmagick++-dev is the second package here, and it is present for a reason
+# worth writing down because nothing in the analysis wants ImageMagick. The
+# chain is: GSVA 2.4.9 Imports SpatialExperiment 1.20.0, which Imports magick,
+# whose configure step needs Magick++.h. All three are hard Imports, not
+# Suggests, so there is no dependency flag that avoids it -- the v5 build failed
+# at exactly this point ("fatal error: Magick++.h: No such file or directory",
+# run 31491127807). GSVA is wanted for the bulk half of the program layer:
+# scoring a gene program across the METSIM cohorts is ssGSEA's job, and it is
+# the method a reader will expect there. SpatialExperiment only reaches for
+# magick when it reads spatial images, which this project never does; the
+# dependency is structural, not functional.
+#
+# The alternative was dropping GSVA and scoring programs with UCell (already in
+# this image, rank-based, works on bulk). Rejected: that trades the field's
+# standard method for an unconventional one to avoid installing a leaf library.
+# Keeping both means the two scorings can be compared, which is worth more.
+#
+# Blast radius, stated the same way as curl's above: unlike curl -- which
+# upgrades libcurl4t64, a library four already-built R packages link at runtime
+# -- ImageMagick is not linked by anything else in this image. The only consumer
+# is the magick package built in the next layer. The cost is size, not risk, and
+# it is not small: the -dev package pulls the ImageMagick 6 runtime plus headers.
+# The measured delta is recorded in the v5 entry of the project's decision log
+# rather than guessed at here.
 COPY nichenet-priors.md5 /opt/nichenet/nichenet-priors.md5
 RUN set -eu; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl; \
+    apt-get install -y --no-install-recommends curl libmagick++-dev; \
     rm -rf /var/lib/apt/lists/*; \
     cd /opt/nichenet; \
     while read -r _ f; do \

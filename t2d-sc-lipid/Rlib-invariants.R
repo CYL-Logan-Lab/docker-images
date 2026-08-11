@@ -46,14 +46,36 @@ PKG_INVARIANT <- c(
   # had quietly upgraded the thing under every PCA in the project, and the build
   # would print "numerical chain intact" on its way to publishing.
   #
-  # None of these can fail spuriously, and that was checked rather than assumed:
-  # across both pinned repositories (26890 index entries, Bioc 3.22 + the frozen
-  # CRAN snapshot) the highest minimum any package declares is irlba 2.3.5,
-  # igraph 2.2.2, uwot 0.2.4, Rcpp 1.1.1.1.1, RcppEigen 0.3.4,
-  # RcppArmadillo 15.2.6.1 -- every one at or below what is installed, so
-  # nothing in reach can force an upgrade. Re-run that check before adding a
-  # package here; an assertion that fires when nothing is wrong gets deleted,
-  # which is worse than not having written it.
+  # None of these can fail spuriously, and that was checked rather than assumed.
+  # The check is: across every pinned repository, what is the highest minimum
+  # any package declares for each name below? Re-run it before adding a package
+  # here -- an assertion that fires when nothing is wrong gets deleted, which is
+  # worse than not having written it.
+  #
+  # Re-run for v5 on 2026-08-11, now over **four** repositories (Bioc 3.22
+  # software + annotation + experiment, and the frozen CRAN snapshot; 28251
+  # index entries). Highest minimum declared anywhere, against what is
+  # installed:
+  #
+  #   Seurat        5.4.0     < 5.5.1        SeuratObject  5.3.0    < 5.4.0
+  #   Matrix        1.7-4     < 1.7-5        harmony       1.2.0    < 2.0.5
+  #   scDblFinder   1.20.0    < 1.24.10      irlba         2.3.5    < 2.3.7
+  #   igraph        2.2.2     < 2.3.2        Rcpp          1.1.1-1.1 = 1.1.1.1.1
+  #   RcppEigen     0.3.4.0.0 < 0.3.4.0.2    RcppArmadillo 15.2.6-1 < 15.4.0.1
+  #   uwot          0.2.4     = 0.2.4        presto        (nothing declares it)
+  #
+  # Every one is at or below what is installed, so nothing in reach can force an
+  # upgrade. Two sit exactly *at* the installed version rather than below it
+  # (uwot, Rcpp) -- still safe, because install.packages() upgrades only to
+  # satisfy an unmet minimum and these are met, but they are the two with no
+  # headroom, so they are the two to re-check first next time.
+  #
+  # What v5 added to the reachable set: the co-expression / TF / trajectory /
+  # bulk stack (WGCNA, hdWGCNA and its closure, decoupleR, dorothea, slingshot,
+  # UCell, GSVA, sva, glmnet, hgu219.db). Restricted to just that closure --
+  # 65 packages -- the highest minimums are lower still: Matrix 1.5-0 (GSVA),
+  # igraph 2.0.0 (graphlayouts), Rcpp 0.11.0 (WGCNA), and nothing at all for the
+  # other nine.
   irlba         = "2.3.7",
   uwot          = "0.2.4",
   igraph        = "2.3.2",

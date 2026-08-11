@@ -65,16 +65,34 @@ assert_invariants("before the GitHub layer")
 # GitHub archives and whatever dependencies of theirs are not already present.
 options(repos = c(BIOC = "https://bioconductor.org/packages/3.22/bioc",
                   BIOCANN = "https://bioconductor.org/packages/3.22/data/annotation",
+                  BIOCEXP = "https://bioconductor.org/packages/3.22/data/experiment",
                   CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06"),
         Ncpus = 4, timeout = 1200)
 
 # SHAs read from the repositories on 2026-08-11; the Version column is what the
 # DESCRIPTION at that SHA says, and is asserted below rather than trusted.
+#
+# hdWGCNA (added in v5) is on neither CRAN nor Bioconductor either, so it lands
+# in this layer for the same reason as the other two. Two things about the pin
+# are worth stating rather than leaving to be rediscovered:
+#   * Its default branch is `dev`, not `main`. The SHA below is the one the tag
+#     v0.4.12 points at, which at the time of writing is also the tip of `dev`.
+#     Pinning the SHA rather than the tag matters more than usual here: the two
+#     currently coincide, so a tag moved onto a later dev commit would change
+#     the installed code without changing anything visible in this file.
+#   * It Depends on enrichR, whose .onAttach issues six untimed HTTP requests
+#     to maayanlab.cloud. So library(hdWGCNA) reaches for the network, and this
+#     layer -- unlike the smoke test -- has one. That is why the loadability
+#     check below loads the namespace instead of attaching. See the note in
+#     install-Rpkgs.R for why nothing downstream may route enrichment through
+#     it either.
 GH_PINNED <- list(
   list(pkg = "CellChat",  repo = "jinworks/CellChat",
        sha = "75253cd0c9e68410e6e721a6d3a0419a1d7e358f", version = "2.2.0.9001"),
   list(pkg = "nichenetr", repo = "saeyslab/nichenetr",
-       sha = "66f90d5eeafef280b2b2f339b3fd70ffec1781dd", version = "2.2.1.1")
+       sha = "66f90d5eeafef280b2b2f339b3fd70ffec1781dd", version = "2.2.1.1"),
+  list(pkg = "hdWGCNA",   repo = "smorabit/hdWGCNA",
+       sha = "e3344d1f7bbac4264adf94f7aa31e0802fa8282d", version = "0.4.12")
 )
 
 install_pinned_github <- function(spec) {
@@ -150,7 +168,15 @@ install_pinned_github <- function(spec) {
   # Installable is not loadable: a missing system library shows up here, not
   # above. Only runs when this layer is actually built; the per-CI-run check is
   # in .github/workflows/build.yml.
-  library(spec$pkg, character.only = TRUE, quietly = TRUE)
+  #
+  # loadNamespace() rather than library(), for the reason spelled out at the
+  # matching check in install-Rpkgs.R: hdWGCNA Depends on enrichR, whose
+  # .onAttach makes six untimed requests to maayanlab.cloud, and this layer has
+  # network. Loading the namespace is what proves the compiled code resolves;
+  # attaching is exercised in the smoke test, where there is no network to
+  # reach. Applied to all three rather than special-casing hdWGCNA, so the next
+  # package added here inherits the safe form instead of the hazardous one.
+  loadNamespace(spec$pkg)
   cat(spec$pkg, got, "installed and loadable\n")
 }
 
