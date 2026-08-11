@@ -32,15 +32,15 @@
 #      environment".
 #      A failed assertion means upstream moved: write the new version into
 #      PKG_PINNED and rebuild -- do **not** delete the assertion.
-#   4. **GitHub packages by commit SHA**, not by tag or branch. Both of the
-#      cell-cell communication packages exist on neither CRAN nor Bioconductor
-#      (checked against the Bioc 3.22 PACKAGES index), so they have to be
+#   4. **GitHub packages by commit SHA**, not by tag or branch. Three packages
+#      here exist on neither CRAN nor Bioconductor (checked against the Bioc
+#      3.22 PACKAGES index): CellChat, nichenetr, and hdWGCNA. They have to be
 #      installed from source repositories -- which have no snapshot service at
 #      all and whose tags can be moved. A commit SHA is the only immutable
 #      reference GitHub offers. See install-github-Rpkgs.R.
 #
 # ── Why add anything on top of satijalab/seurat ─────────────────────────────
-# Three reasons, and the base image supplies none of them.
+# Four reasons, and the base image supplies none of them.
 #   1. Nucleus-level doublet scoring with scDblFinder, plus its dependencies
 #      (scran, scuttle, scater, bluster, edgeR, BiocNeighbors, BiocSingular,
 #      metapod, ScaledMatrix) and xgboost from CRAN.
@@ -61,6 +61,25 @@
 #      reasons recorded where each would have been installed. CellChatDB ships
 #      inside its package; NicheNet's prior networks do not, so they are
 #      downloaded here and checksummed -- see the layer below.
+#   4. **Gene programs rather than cell proportions** (added in v5). The project
+#      found cluster proportions to be unstable across donors and moved the
+#      question from "how many cells of type X" to "how much of program P",
+#      which needs a co-expression layer (WGCNA + hdWGCNA and their closure),
+#      two scoring routes so a module can be carried from nuclei to bulk arrays
+#      (UCell per cell, GSVA/ssGSEA per sample), a TF-activity layer (decoupleR
+#      with dorothea's regulons), a trajectory layer (slingshot -- and *not*
+#      RNA velocity, which the data cannot support: no BAMs, no unspliced
+#      counts), and the bulk side of the bridge (sva, glmnet, and hgu219.db for
+#      the HG-U219 array the METSIM bulk cohort was run on).
+#      The offline rule decided membership here too, exactly as it did in 3:
+#      dorothea is installed because its regulons ship as an .rda inside the
+#      package, whereas decoupleR's own CollecTRI loader would fetch them
+#      through OmnipathR at call time. That pulls in a *fourth* repository, the
+#      Bioconductor experiment-data repo. SCENIC/RcisTarget (multi-GB motif
+#      rankings fetched at analysis time), msigdbr (network at call time; the
+#      Hallmark GMT is already sha256-pinned in the downstream repo) and
+#      monocle3 were all excluded for the same reason or for closure size --
+#      recorded where each would have been installed.
 #
 # ── The NicheNet priors are downloaded before the R layers, deliberately ────
 # 420 MB from Zenodo. Putting it first means editing an installer does not
@@ -80,7 +99,7 @@
 FROM satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e
 
 LABEL org.opencontainers.image.source="https://github.com/CYL-Logan-Lab/docker-images"
-LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr, all with offline databases"
+LABEL org.opencontainers.image.description="R env for CYL-Logan-Lab/t2d-sc-lipid: Seurat 5.5.1 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr + hdWGCNA/decoupleR/slingshot/UCell/GSVA, all with offline databases"
 LABEL org.opencontainers.image.base.name="satijalab/seurat@sha256:048d965487afc2961c450879692281a73e24f6de47360ed2f11b31112ebd844e"
 
 ENV LC_ALL=C.UTF-8 \

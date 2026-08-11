@@ -44,8 +44,17 @@ source("/opt/Rlib-invariants.R")
 # assertion, reporting a missing package instead of a slow network. Raising the
 # timeout does not paper over a real failure: an unreachable repository still
 # fails, just not on file size.
+# BIOCEXP is a **fourth** repository, added for the gene-program layer. Like
+# BIOCANN it is a separate Bioconductor repository, and it exists here for
+# exactly one package: dorothea, whose TF regulons ship as an .rda inside the
+# package (dorothea_hs.rda). That is the whole reason it was chosen over the
+# obvious alternative -- decoupleR's own CollecTRI loader fetches the regulons
+# through OmnipathR at call time, i.e. over the network, on the day the analysis
+# runs. Same defect that disqualified liana and SingleCellSignalR; same answer.
+# It is pinned to the same 3.22 release as BIOC and BIOCANN.
 options(repos = c(BIOC = "https://bioconductor.org/packages/3.22/bioc",
                   BIOCANN = "https://bioconductor.org/packages/3.22/data/annotation",
+                  BIOCEXP = "https://bioconductor.org/packages/3.22/data/experiment",
                   CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06"),
         Ncpus = 4, timeout = 1200)
 
@@ -162,7 +171,93 @@ PKG_PINNED <- c(
   caret        = "7.0-1",
   randomForest = "4.7-1.2",
   Hmisc        = "5.2-6",
-  fdrtool      = "1.2.18"
+  fdrtool      = "1.2.18",
+
+  # ── Gene programs, TF activity, trajectory, bulk projection (image v5) ──────
+  # The downstream project stopped asking "how many cells of type X" and started
+  # asking "how much of program P", because the cluster proportions turned out
+  # not to be stable across donors. That question needs a co-expression module
+  # layer (hdWGCNA over WGCNA), a way to score those modules in cells and in
+  # bulk samples (UCell, GSVA), a TF-activity readout (decoupleR over dorothea's
+  # regulons), a trajectory (slingshot), and the bulk-side machinery to relate
+  # the scores to metabolic traits (sva, glmnet, and the array annotation for
+  # the METSIM cohort). hdWGCNA itself is GitHub-only and lives in layer 4;
+  # everything it needs that the image does not already carry is named here, for
+  # the reason given in the CellChat block above -- the GitHub layer installs
+  # with repos = NULL and resolves nothing, so a missing dependency there is a
+  # build failure with a package name rather than a silent unpinned fetch.
+  #
+  # WGCNA's three heavy dependencies (impute, preprocessCore from Bioc,
+  # fastcluster and dynamicTreeCut from CRAN) are named rather than left to
+  # resolution because the module assignment is a *result*: dynamicTreeCut is
+  # the tree-cut algorithm that decides which genes end up in which module, and
+  # a silent bump there changes the modules a manuscript figure is drawn from.
+  #
+  # enrichR is here only because hdWGCNA Depends on it. Read that as a warning
+  # rather than an endorsement: its .onAttach calls listEnrichrSites(), which
+  # issues six untimed httr::GET requests to maayanlab.cloud, so *attaching*
+  # hdWGCNA reaches for the network. Two consequences, handled in two places.
+  # At build time the network is real, so this file never attaches anything --
+  # see the loadNamespace() loadability check at the bottom. At smoke-test time
+  # there is no network, has_internet() is false, and attaching degrades to
+  # "No internet connection could be found" with enrichR.live = FALSE.
+  # Nothing downstream may route enrichment through it -- the offline path
+  # (clusterProfiler + the sha256-pinned Hallmark GMT) is already in this image
+  # and is the one to use.
+  #
+  # msigdbr is deliberately still absent, for the reason given in the enrichment
+  # block above: since 26.x it fetches gene sets over the network at call time.
+  # SCENIC is likewise absent -- RcisTarget needs multi-gigabyte motif-ranking
+  # databases downloaded from resources.aertslab.org at analysis time, which is
+  # the same provenance defect one more time. decoupleR + dorothea is the
+  # offline TF-activity path, and it was the alternative the analysis plan
+  # already named. What that costs, stated plainly: no motif-based regulon
+  # discovery, only scoring against a fixed curated regulon set.
+  # monocle3 is absent too: GitHub-only with a large dependency closure, and
+  # slingshot answers the question that was actually asked (an ordering along
+  # the progenitor-to-remodelling axis), so a second implementation would be
+  # cost without a decision hanging on it.
+  WGCNA          = "1.74",
+  dynamicTreeCut = "1.63-1",
+  fastcluster    = "1.3.0",
+  impute         = "1.84.0",
+  preprocessCore = "1.72.0",
+  GeneOverlap    = "1.46.0",
+  enrichR        = "3.4",
+  tester         = "0.3.0",
+  proxy          = "0.4-29",
+  ggraph         = "2.2.2",
+  tidygraph      = "1.3.1",
+  ggrepel        = "0.9.8",
+
+  # Module scoring. UCell is rank-based and so is not rescaled by the rest of
+  # the matrix, which is what makes a score comparable between the two datasets;
+  # GSVA is the bulk-side counterpart. Both are named because the scores they
+  # produce are the numbers the metabolic association is computed on.
+  UCell          = "2.14.0",
+  GSVA           = "2.4.9",
+  GSEABase       = "1.72.0",
+
+  # TF activity. bcellViper is not optional decoration -- dorothea Imports it.
+  # (OmnipathR is only in dorothea's Suggests, so it is not pulled in, which is
+  # the property that keeps this path offline.)
+  decoupleR      = "2.16.0",
+  dorothea       = "1.22.0",
+  bcellViper     = "1.46.0",
+
+  # Trajectory.
+  slingshot       = "2.18.0",
+  TrajectoryUtils = "1.18.0",
+  princurve       = "2.1.6",
+
+  # Bulk projection. hgu219.db is the probe-to-gene map for GPL13667, the array
+  # behind the METSIM bulk cohort that carries the metabolic phenotypes; it is
+  # an annotation package for the same reason the enrichment databases are --
+  # the mapping ships inside the image instead of being fetched from GEO on the
+  # day the analysis runs.
+  sva            = "3.58.0",
+  glmnet         = "5.0",
+  hgu219.db      = "3.2.3"
 )
 
 install.packages(names(PKG_PINNED))
@@ -199,11 +294,25 @@ if (any(bad)) {
 }
 
 # Installable does not mean loadable: with a missing C-level dependency the
-# package installs fine and library() is what blows up.
+# package installs fine and loading is what blows up.
 # Note this only runs when this layer is actually built; a cache hit skips it.
 # The per-CI-run verification lives in the workflow -- see the header.
-invisible(lapply(names(PKG_PINNED), function(p)
-  library(p, character.only = TRUE, quietly = TRUE)))
+#
+# loadNamespace() rather than library(), and the difference is not cosmetic.
+# Loading a namespace is what runs dyn.load() and .onLoad() -- which is the
+# whole of what this check is for. Attaching additionally runs .onAttach(), and
+# one package here has an .onAttach() worth refusing to run: enrichR 3.4 calls
+# listEnrichrSites(), which issues **six httr::GET requests to maayanlab.cloud
+# with no timeout configured**. This build layer has network, so unlike the
+# smoke test it would really contact that host -- an unpinned third-party
+# service outside the four repositories this file pins, on every uncached
+# build. Its errors are caught (the tryCatch error handler just messages), so
+# the exposure is not a spurious failure; it is a build that hangs when the
+# endpoint black-holes, which no timeout will interrupt.
+# Attaching is exercised where it is safe instead: the smoke test attaches
+# hdWGCNA under --network none, where has_internet() is false and the request
+# is never made.
+invisible(lapply(names(PKG_PINNED), loadNamespace))
 
 # Loadable does not mean usable either -- the annotation packages are SQLite
 # databases behind an R facade, and a truncated download gives you a package
@@ -242,6 +351,50 @@ stopifnot(nrow(rx) > 0, any(grepl("^Homo sapiens", rx$PATHNAME)))
 cat("annotation databases queryable: GAPDH ->", length(go_ids), "GO ids,",
     nrow(go_tm), "resolved in GO.db;", sum(grepl("^Homo sapiens", rx$PATHNAME)),
     "human Reactome pathways\n")
+
+# ── The two databases added in v5, checked the same way ─────────────────────
+# Same argument as above: these are data shipped inside packages, and a package
+# whose data object failed to unpack still attaches cleanly. The point of
+# choosing dorothea and hgu219.db over their networked alternatives was that
+# the data is *in the image*, so that claim gets an assertion rather than a
+# sentence.
+#
+# dorothea_hs is lazy-loaded data, not an exported object, so it has to be
+# pulled out with data(..., envir=) rather than dorothea::dorothea_hs.
+de <- new.env()
+utils::data("dorothea_hs", package = "dorothea", envir = de)
+reg <- get("dorothea_hs", envir = de)
+stopifnot(is.data.frame(reg), nrow(reg) > 1e4,
+          all(c("tf", "confidence", "target", "mor") %in% colnames(reg)),
+          all(c("NFKB1", "RELA", "SMAD3", "TEAD1") %in% reg$tf),
+          all(reg$confidence %in% c("A", "B", "C", "D", "E")),
+          all(reg$mor %in% c(-1, 1)))
+# A/B/C are the confidence levels the downstream step will actually keep, so
+# assert that restricting to them leaves a usable regulon rather than an empty
+# one -- "the file is present" and "the subset you will use is non-empty" are
+# different claims.
+abc <- reg[reg$confidence %in% c("A", "B", "C"), ]
+stopifnot(nrow(abc) > 1e3, length(unique(abc$tf)) > 100)
+
+# hgu219.db is the probe-to-gene map for GPL13667, the array behind the METSIM
+# bulk cohort. The check is a **round trip** rather than a lookup of a probe id
+# written into this file: symbol -> probe, then that probe -> symbol, and the
+# two have to agree. No magic constant is involved, so the assertion cannot
+# fail because a platform annotation renumbered its probes -- it fails when the
+# database is genuinely inconsistent or truncated, which is the only thing it
+# is meant to catch. Same shape as the org.Hs.eg.db -> GO.db chain above.
+fwd <- AnnotationDbi::select(hgu219.db::hgu219.db, keys = "GAPDH",
+                             keytype = "SYMBOL", columns = "PROBEID")
+stopifnot(nrow(fwd) > 0, !anyNA(fwd$PROBEID))
+back <- AnnotationDbi::select(hgu219.db::hgu219.db, keys = fwd$PROBEID[1],
+                              keytype = "PROBEID", columns = c("SYMBOL", "ENTREZID"))
+stopifnot(nrow(back) > 0, "GAPDH" %in% back$SYMBOL, "2597" %in% back$ENTREZID)
+n_probe <- length(AnnotationDbi::keys(hgu219.db::hgu219.db, keytype = "PROBEID"))
+stopifnot(n_probe > 1e4)
+
+cat("v5 databases queryable: dorothea", nrow(reg), "TF-target edges (",
+    length(unique(reg$tf)), "TFs;", nrow(abc), "at confidence A-C) /",
+    "hgu219.db", n_probe, "probes, GAPDH <->", fwd$PROBEID[1], "\n")
 
 # ── Nothing above was allowed to move the numerical chain ────────────────────
 # Everything installed here brought its own dependency closure with it, and
