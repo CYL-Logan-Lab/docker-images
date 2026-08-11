@@ -13,7 +13,7 @@ ghcr.io/cyl-logan-lab/<directory>
 
 | Directory | Used by | Contents |
 |---|---|---|
-| [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder |
+| [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr, all databases offline |
 | [`t2d-meta-lipid/`](t2d-meta-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-adipose-depot-dysfunction](https://github.com/CYL-Logan-Lab/t2d-adipose-depot-dysfunction) | R 4.5.2 / coloc 6.0.1 / jsonlite 2.0.0 / curl 8.5.0 |
 
 ## How downstream projects reference an image
@@ -58,10 +58,10 @@ image. So rebuilding the same recipe six months later **may** yield a slightly
 different environment — which is exactly why downstream must reference the
 digest instead of "building its own from the recipe".
 
-## Three pinning layers
+## Four pinning layers
 
 Every Dockerfile has to answer "what is this environment" on its own. A recipe
-without all three layers only says "roughly these packages":
+missing one of these layers only says "roughly these packages":
 
 1. **Base image taken by digest**, not by tag; and the install script
    **asserts** the R / Seurat versions — a claim stated in prose at the top of
@@ -73,8 +73,21 @@ without all three layers only says "roughly these packages":
    every direct dependency gets an **explicit version assertion** and a mismatch
    fails the build. A failed assertion means upstream moved: write the new
    version into the recipe and rebuild, **do not** delete the assertion.
+4. **GitHub-only packages by commit SHA**, never by tag or branch — a tag can be
+   repointed at different code with nothing visible changing in the recipe, and
+   a SHA cannot. Fetch the archive by SHA (not `remotes::install_github`, which
+   needs a rate-limited API call and, worse, honours the `Remotes:` field —
+   which installs *further* packages from GitHub HEAD, unpinned by
+   construction), then check the DESCRIPTION says the claimed version *before*
+   installing. Dependencies come from layers 2 and 3 only; one that is not
+   available there fails the build instead of being fetched from somewhere
+   unpinned.
 
-Two further conventions:
+   Reach for this layer only when a package is on neither CRAN nor
+   Bioconductor. It is the weakest of the four: nothing upstream promises the
+   repository will still exist.
+
+Four further conventions:
 
 - **The smoke test lives outside the Dockerfile**, run by CI with `docker run`
   against the image that build actually produced. As a layer inside the image it
@@ -85,14 +98,35 @@ Two further conventions:
 - **Bake the package manifest into the image** (`/opt/Renv-manifest.tsv`),
   recording the whole library rather than just the named packages — for the
   transitive dependencies the assertions cannot cover, this at least answers
-  afterwards which version was in there.
+  afterwards which version was in there. Write it in the **last** install layer,
+  or it will not list what the later layers installed.
+- **A reference database that a package fetches at run time is not pinned by any
+  of the four layers** — the result then depends on the day the analysis ran.
+  Prefer packages that ship their databases (`org.Hs.eg.db`, `reactome.db`,
+  `CellChatDB`); when the data is distributed separately, download it *into the
+  image* from an immutable archive and verify a checksum (NicheNet's prior
+  networks come from a Zenodo record this way). Put that download **before** the
+  R layers so that editing an installer does not re-fetch hundreds of megabytes.
+  This criterion decides package choices, not just build steps: `liana` and
+  `SingleCellSignalR` were both dropped from `t2d-sc-lipid` for failing it, and
+  the reasons are recorded next to where each would have been installed.
+- **Adding packages must not move the ones already there.** `install.packages()`
+  silently upgrades an installed package whenever some new dependency declares a
+  higher minimum, and the numerical libraries under an existing analysis
+  (`Matrix`, `irlba`, …) are exactly what must not move. So: install only the
+  *missing* dependencies, and assert afterwards that the named versions are
+  unchanged (`t2d-sc-lipid/Rlib-invariants.R`). Downstream asserts the six it
+  calls by name when it pulls the image; the image additionally holds the
+  numerical libraries underneath those, which nothing downstream names. Failing
+  at build time is one line in a CI log, failing after publishing is a retracted
+  digest.
 
 ## Adding a new environment
 
 1. Create a directory named after the downstream project's repository (lowercase
    letters and digits only, with `.` `_` `-` as separators — CI enforces this,
    and a GHCR repository path must be lowercase).
-2. Write `<directory>/Dockerfile` following the three pinning layers in
+2. Write `<directory>/Dockerfile` following the pinning layers in
    `t2d-sc-lipid/Dockerfile`.
 3. Add a row to the table above.
 4. Open a PR — CI builds it and runs the smoke test, but does not push. Only a

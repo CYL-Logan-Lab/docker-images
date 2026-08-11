@@ -174,6 +174,30 @@ jobs:
       # This runs the image this build actually produced: when publishing, pulled
       # back by digest (so the pushed artifact itself is what gets tested);
       # otherwise the one just loaded locally.
+      #
+      # The script is mounted rather than passed with `Rscript -e`. `-e` has a
+      # hard size limit that this one grew past: Rscript encodes the expression
+      # (space -> "~+~", newline -> "~n~") into a 10000-character buffer, and an
+      # over-long expression is dropped with a warning, after which R reads EOF
+      # on stdin and exits 0. That is what happened in run 31458384267: green in
+      # 0.3 s, none of the assertions executed. See t2d-sc-lipid/smoke.R.
+      #
+      # Hence the grep. The step's exit code is not sufficient evidence that the
+      # test ran -- the whole failure above was a command that exits 0 while
+      # doing nothing -- so the script prints a sentinel and this asserts it.
+      #
+      # Every image directory therefore owns a `smoke.R` that ends in a line
+      # starting "smoke ok:", and the file is required rather than optional.
+      # t2d-meta-lipid arrived on main calling its copy `smoke-test.R`, mounted
+      # only when present with a fallback to the `-e` form; it was renamed here
+      # so there is one name and one rule. Optional is the wrong shape for it.
+      # Not because the fallback failed to run -- that payload encoded to 4085,
+      # well under the limit, and its assertions were real -- but because it was
+      # one generic test standing in for whatever image was missing its own:
+      # t2d-sc-lipid would quietly go back to the narrower pre-v4 checks and
+      # report green, and t2d-meta-lipid would fail on packages it does not
+      # ship. A missing smoke.R should be a hard failure, not a silent downgrade
+      # to something that no longer tests what the image actually contains.
       - name: Smoke test the image this build produced
         shell: bash
         env:
@@ -183,49 +207,16 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${PUBLISH}" == "true" ]]; then img="${REF}@${DIGEST}"; else img="${REF}:${SHA}"; fi
-          echo "smoke testing ${img}"
-          if [[ -f "${IMAGE}/smoke-test.R" ]]; then
-            docker run --rm --network none \
-              --mount "type=bind,src=${PWD}/${IMAGE}/smoke-test.R,dst=/tmp/smoke-test.R,readonly" \
-              "${img}" Rscript --vanilla /tmp/smoke-test.R
-            exit 0
-          fi
-          docker run --rm --network none "${img}" Rscript --vanilla -e '
-            suppressPackageStartupMessages({
-              library(Seurat); library(scDblFinder)
-              library(clusterProfiler); library(org.Hs.eg.db); library(ReactomePA)
-            })
-            stopifnot(file.exists("/opt/Renv-manifest.tsv"))
-            # --network none is the point of this line: enrichment must work with
-            # no network at all, otherwise the gene sets are not really in the image.
-            # Each of the three back-ends is exercised separately -- they read
-            # different databases (org.Hs.eg.db, reactome.db) and a working GO
-            # query says nothing about whether reactome.db shipped intact.
-            eg <- suppressMessages(bitr(c("POSTN","COL1A1","COL3A1","COL6A1","COL5A1",
-                                          "DCN","LUM","FN1","FBN1","SPARC","TGFB1","MMP2"),
-                                        "SYMBOL", "ENTREZID", org.Hs.eg.db))
-            go <- enrichGO(eg$ENTREZID, OrgDb = org.Hs.eg.db, ont = "BP",
-                           pvalueCutoff = 0.05, readable = TRUE)
-            re <- ReactomePA::enrichPathway(eg$ENTREZID, pvalueCutoff = 0.05, readable = TRUE)
-            stopifnot(nrow(as.data.frame(go)) > 0, nrow(as.data.frame(re)) > 0)
-            # enrichplot is only ever used to draw; building the plot object is
-            # what catches a broken install, so build one and throw it away.
-            invisible(ggplot2::ggplot_build(enrichplot::dotplot(go, showCategory = 5)))
-            # fgsea needs a ranked vector rather than a gene list, so give it one,
-            # and a gene set that is a strict subset of it -- a set equal to the
-            # whole ranking is degenerate and would pass without testing anything.
-            # fgseaSimple by name: the permutation path reached via fgsea(nperm=)
-            # is deprecated and a deprecation warning here would be noise.
-            set.seed(1)
-            rk <- setNames(seq(2, -2, length.out = length(eg$ENTREZID)), eg$ENTREZID)
-            fg <- fgsea::fgseaSimple(list(top = eg$ENTREZID[1:5]), rk, minSize = 2, nperm = 200)
-            stopifnot(nrow(fg) == 1, is.finite(fg$ES))
-            cat("smoke ok:", R.version.string,
-                "/ Seurat", as.character(packageVersion("Seurat")),
-                "/ scDblFinder", as.character(packageVersion("scDblFinder")),
-                "/ clusterProfiler", as.character(packageVersion("clusterProfiler")),
-                "/ offline enrichGO", nrow(as.data.frame(go)), "terms",
-                "/ enrichPathway", nrow(as.data.frame(re)), "pathways\n")'
+          script="${IMAGE}/smoke.R"
+          # A missing script is a failure, not a skip: silently testing nothing
+          # is the thing this whole step exists to prevent.
+          [[ -f "${script}" ]] || { echo "::error::${script} does not exist -- every image needs a smoke test"; exit 1; }
+          echo "smoke testing ${img} with ${script}"
+          docker run --rm --network none \
+            -v "${PWD}/${script}:/smoke.R:ro" \
+            "${img}" Rscript --vanilla /smoke.R 2>&1 | tee "${RUNNER_TEMP}/smoke.out"
+          grep -q '^smoke ok:' "${RUNNER_TEMP}/smoke.out" || {
+            echo "::error::${script} exited 0 without printing its sentinel -- it did not run to the end"; exit 1; }
 
       - name: Report digest
         shell: bash
