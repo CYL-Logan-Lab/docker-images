@@ -98,11 +98,40 @@ ENV NICHENET_PRIOR_DIR=/opt/nichenet
 # and exits 0, and the failure would surface as a corrupt .rds months later.
 # md5sum -c is the second line of defence and the one that catches a truncated
 # transfer, which --fail does not.
+#
+# The base image has no curl -- the first CI build of this layer failed with
+# "/bin/sh: 1: curl: not found", which no amount of local reasoning had caught,
+# so it is installed here as build-time transport. This is the only apt install
+# in the file and it is deliberately not version-pinned: pinning a package
+# version in a rolling Ubuntu archive breaks the build the day that version is
+# superseded, and durable package-level reproducibility would need an Ubuntu
+# snapshot repository, not a version string. What the pinning discipline
+# actually promises is on the other side of this: deployed images are consumed
+# by digest, and the bytes fetched here are md5-checked after the download loop.
+#
+# Only curl, not ca-certificates: the base image already ships the trust store
+# (ca-certificates 20240203, a 146-certificate bundle that verifies Zenodo's
+# current chain), and naming it here would upgrade that system-wide bundle,
+# which R reads too. Not naming it leaves it alone -- checked, not assumed.
+# Installing curl does still upgrade libcurl4t64 and libcurl4-openssl-dev
+# (8.5.0-2ubuntu10.9 -> .11 as of this writing), and several already-built R
+# packages link libcurl at runtime -- curl, arrow, Rsamtools, rhdf5. That is a
+# patch move inside one ABI, not a version change any of them would notice, but
+# it is a smaller blast radius rather than none, which is worth stating plainly
+# instead of claiming the layer touches nothing but one executable.
+#
+# --retry covers the third-party half of this: Zenodo is not our infrastructure
+# and the largest file here is 262 MB, so a transient 5xx should cost a retry
+# rather than a build.
 COPY nichenet-priors.md5 /opt/nichenet/nichenet-priors.md5
 RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl; \
+    rm -rf /var/lib/apt/lists/*; \
     cd /opt/nichenet; \
     while read -r _ f; do \
-      curl -sSfL -o "$f" "https://zenodo.org/records/7074291/files/${f}?download=1"; \
+      curl -sSfL --retry 5 --retry-delay 5 --retry-connrefused \
+           -o "$f" "https://zenodo.org/records/7074291/files/${f}?download=1"; \
     done < nichenet-priors.md5; \
     md5sum -c nichenet-priors.md5; \
     chmod 0444 /opt/nichenet/*
