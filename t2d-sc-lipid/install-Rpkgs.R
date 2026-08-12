@@ -263,7 +263,34 @@ PKG_PINNED <- c(
   # day the analysis runs.
   sva            = "3.58.0",
   glmnet         = "5.0",
-  hgu219.db      = "3.2.3"
+  hgu219.db      = "3.2.3",
+
+  # ── Bulk projection, second half (image v6) ─────────────────────────────────
+  # limma is already in this image -- edgeR Imports it, so it arrived in v3 as a
+  # transitive dependency nobody named. Naming it now changes nothing about what
+  # is installed and everything about what happens when it moves: the bulk step
+  # calls lmFit/eBayes/removeBatchEffect by name, so limma is a package this
+  # project's results depend on, and those belong under the assertion rather
+  # than floating with whatever pulled them in. Re-installing an
+  # already-present package from the same Bioc 3.22 branch is a no-op.
+  #
+  # metafor is new. Three bulk cohorts carry the metabolic phenotypes (GSE70353
+  # on HG-U219, GSE135134 RNA-seq, GSE64567), and a program-to-trait association
+  # measured three times has to be reported as one combined estimate with
+  # per-cohort weights and a heterogeneity statistic -- three p-values in a row
+  # is not a result, and picking the cohort with the smallest one is worse.
+  # rma()/rma.mv() is what a reader of a metabolic journal will expect and
+  # metafor is the reference implementation; it is pure R with no compiled code.
+  # Its closure is almost entirely already here (nlme, lattice, digest,
+  # numDeriv, pbapply, mathjaxr are all installed); metadat, a dataset package
+  # it Depends on, is the only thing it actually pulls in.
+  #
+  # Neither package declares a minimum on anything in Rlib-invariants.R --
+  # metafor asks for Matrix with no version at all and limma for nothing but
+  # statmod -- so neither can force an upgrade of the numerical chain. Checked
+  # against the pinned indices, not assumed; see the v6 note in that file.
+  limma          = "3.66.0",
+  metafor        = "5.0-1"
 )
 
 install.packages(names(PKG_PINNED))

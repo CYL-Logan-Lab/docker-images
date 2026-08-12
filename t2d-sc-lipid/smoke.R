@@ -26,6 +26,13 @@
 # Dockerfile layer it would be skipped on a cache hit, and the build would look
 # verified without having started an R process.
 #
+# Since v6 the workflow mounts this whole directory read-only rather than this
+# one file, because the image now ships two runtimes. This file is still the
+# entry point and still owns the sentinel; near the bottom it runs smoke.py
+# through the venv interpreter, and it fails if /opt/pyenv exists and smoke.py
+# does not. Splitting the Python half into a second CI step was the alternative
+# and it is worse: two sentinels can go green one at a time.
+#
 # The last line prints a sentinel beginning "smoke ok:". The workflow greps for
 # it. Exit 0 is not enough evidence that this file ran -- that is exactly the
 # failure above.
@@ -36,6 +43,7 @@ suppressPackageStartupMessages({
   library(CellChat); library(nichenetr)
   library(WGCNA); library(hdWGCNA); library(UCell); library(GSVA)
   library(decoupleR); library(slingshot)
+  library(limma); library(metafor)
 })
 stopifnot(file.exists("/opt/Renv-manifest.tsv"))
 # --network none is the point of this line: enrichment must work with
@@ -246,8 +254,8 @@ so <- SetDatExpr(so, group_name = "g1", group.by = "grp", assay = "RNA")
 # Into tempdir for the network step, both arguments and cwd. ConstructNetwork
 # writes its TOM where tom_outdir says, but the WGCNA call underneath it also
 # takes useDiskCache = TRUE with cacheDir = ".", so a block cache lands in the
-# working directory -- which, in CI, is the image's WORKDIR with only the smoke
-# script bind-mounted next to it. Writable today because the container runs as
+# working directory -- which, in CI, is the image's WORKDIR (the smoke files are
+# mounted elsewhere, read-only). Writable today because the container runs as
 # root; this stops depending on that.
 owd <- setwd(tempdir())
 so <- ConstructNetwork(so, soft_power = 6, minModuleSize = 10, tom_name = "toy",
@@ -407,6 +415,112 @@ bk <- suppressMessages(AnnotationDbi::select(
   columns = c("SYMBOL", "ENTREZID")))
 stopifnot(nrow(fw) > 0, !anyNA(fw$PROBEID),
           "GAPDH" %in% bk$SYMBOL, "2597" %in% bk$ENTREZID)
+# ── v6: the bulk differential / meta-analysis pair ───────────────────────────
+# limma is what carries the module scores in the bulk cohorts to a group
+# contrast, and metafor is what combines the three cohorts into one estimate.
+# Both are exercised against a matrix whose right answer is known before the
+# run rather than against whatever the first run produced.
+#
+# 100 genes, 8 samples, two groups of four. Genes 1..5 are raised by exactly 3
+# in group B; the other 95 are not. The within-group wobble is the *same* four
+# offsets in both groups, so every non-DE gene has exactly equal group means and
+# a true logFC of 0 -- that is what makes "the top 5 by P are the 5 planted
+# genes" a structural claim rather than a probabilistic one. The offsets are
+# scaled per gene so that the 100 genes have a spread of variances for eBayes to
+# moderate across; a single variance would leave squeezeVar nothing to do.
+de_gen <- paste0("bg", 1:100); de_sam <- paste0("bs", 1:8)
+de_hit <- de_gen[1:5]
+de_off <- c(-1, -1/3, 1/3, 1)                     # sums to 0 within each group
+de_mat <- outer(seq_along(de_gen), seq_along(de_sam), function(i, j) {
+  6 + (i %% 7L) +                                  # gene baseline
+    de_off[((j - 1L) %% 4L) + 1L] * (0.2 + 0.1 * (i %% 5L)) +
+    ifelse(i <= 5L & j > 4L, 3, 0)                 # the planted effect
+})
+dimnames(de_mat) <- list(de_gen, de_sam)
+de_grp <- factor(rep(c("A", "B"), each = 4L), levels = c("A", "B"))
+de_fit <- eBayes(lmFit(de_mat, model.matrix(~de_grp)))
+de_top <- topTable(de_fit, coef = 2, number = 5, sort.by = "P")
+de_all <- topTable(de_fit, coef = 2, number = Inf, sort.by = "none")
+stopifnot(identical(sort(rownames(de_top)), sort(de_hit)),
+          max(abs(de_top$logFC - 3)) < 1e-9,
+          max(de_top$adj.P.Val) < 0.01,
+          # and the other 95 are flat to machine precision, not merely small
+          max(abs(de_all[setdiff(de_gen, de_hit), "logFC"])) < 1e-9)
+# metafor on three effect sizes standing in for the three bulk cohorts. The
+# check is against the closed form rather than against a stored number: an
+# equal-effects fit *is* the inverse-variance weighted mean, with standard error
+# sqrt(1/sum(1/vi)), so agreement to 1e-10 says the fit is solving the problem
+# it claims to. "EE" rather than "FE" -- same arithmetic, and it is the spelling
+# metafor now uses for this model.
+#
+# The three estimates disagree enough that Q is far above its degrees of
+# freedom, so REML must put tau2 strictly above zero, and a random-effects
+# standard error must then exceed the equal-effects one. A degenerate set
+# (tau2 = 0) would let both models coincide and the comparison would test
+# nothing.
+ma_yi <- c(0.10, 0.62, 0.35); ma_vi <- c(0.010, 0.012, 0.011)
+ma_hat <- sum(ma_yi / ma_vi) / sum(1 / ma_vi)
+ma_se <- sqrt(1 / sum(1 / ma_vi))
+ma_ee <- rma(yi = ma_yi, vi = ma_vi, method = "EE")
+ma_re <- rma(yi = ma_yi, vi = ma_vi, method = "REML")
+stopifnot(ma_ee$k == 3L,
+          abs(as.numeric(coef(ma_ee)) - ma_hat) < 1e-10,
+          abs(ma_ee$se - ma_se) < 1e-10,
+          is.finite(ma_re$tau2), ma_re$tau2 > 0,
+          ma_re$se > ma_ee$se)
+# ── v6: hand off to the Python half ──────────────────────────────────────────
+# The image ships two runtimes and may not report green on the strength of one
+# of them, so smoke.py runs from here rather than as a second CI step: one entry
+# point, one sentinel, and no way for the Python half to be skipped while the
+# workflow still passes. That is also why a missing smoke.py is a failure and
+# not a warning -- the failure mode being defended against is "the mount changed
+# and nobody noticed", which a warning does not catch.
+#
+# The interpreter is the venv's, not whatever `python3` resolves to: the system
+# interpreter would import none of this and would fail confusingly. smoke.py
+# asserts sys.prefix on its side as well.
+#
+# -B because the mount is read-only and CPython would otherwise try to write
+# __pycache__ next to the script.
+#
+# Every one of these is required, with no "the image might not have it" branch.
+# A skip branch would mean this file passes against an image with no Python in
+# it at all, i.e. CI would go green on a v5 artifact built from the v6 recipe --
+# precisely the mistake the single-sentinel arrangement above exists to prevent.
+# A smoke test belongs to one recipe; an older image is tested by the smoke.R on
+# its own commit.
+py_env <- Sys.getenv("PYENV_DIR", "/opt/pyenv")
+py_self <- sub("^--file=", "",
+               grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+if (length(py_self) != 1L)
+  stop("cannot locate this script, so cannot find smoke.py next to it; ",
+       "run it as `Rscript --vanilla /path/to/smoke.R`", call. = FALSE)
+py_bin <- file.path(py_env, "bin", "python")
+py_smoke <- file.path(dirname(py_self), "smoke.py")
+if (!dir.exists(py_env))
+  stop("no Python environment at ", py_env, ". This image is expected to ship ",
+       "one (v6 onwards); if PYENV_DIR is unset the default /opt/pyenv is used, ",
+       "so an image built before v6 fails here by design.", call. = FALSE)
+if (!file.exists(py_bin))
+  stop(py_env, " exists but has no bin/python", call. = FALSE)
+if (!file.exists("/opt/pyenv-manifest.tsv"))
+  stop(py_env, " exists but /opt/pyenv-manifest.tsv does not -- the venv was ",
+       "not built by install-pypkgs.sh, or pyenv-verify.py never ran.",
+       call. = FALSE)
+if (!file.exists(py_smoke))
+  stop("smoke.py is not next to this file (looked in ", dirname(py_self),
+       "). Mount the whole image directory, not just smoke.R.", call. = FALSE)
+py_out <- suppressWarnings(
+  system2(py_bin, c("-B", shQuote(py_smoke)), stdout = TRUE, stderr = TRUE))
+py_rc <- attr(py_out, "status")
+py_line <- grep("^python ok:", py_out, value = TRUE)
+if ((!is.null(py_rc) && py_rc != 0L) || length(py_line) != 1L) {
+  # Only on failure: cNMF is verbose, and a passing run should leave the CI
+  # log readable. On a failure the whole thing is the evidence.
+  cat(py_out, sep = "\n")
+  stop("smoke.py failed (exit ", if (is.null(py_rc)) 0L else py_rc,
+       ", ", length(py_line), " sentinel lines)", call. = FALSE)
+}
 cat("smoke ok:", R.version.string,
     "/ Seurat", as.character(packageVersion("Seurat")),
     "/ scDblFinder", as.character(packageVersion("scDblFinder")),
@@ -433,4 +547,11 @@ cat("smoke ok:", R.version.string,
     "and GSVA", as.character(packageVersion("GSVA")), "both separate the set",
     "/ slingshot", as.character(packageVersion("slingshot")),
     "1 lineage, rho", round(stats::cor(pt[, 1], tt, method = "spearman"), 3),
-    "/ hgu219.db GAPDH <->", fw$PROBEID[1], "\n")
+    "/ hgu219.db GAPDH <->", fw$PROBEID[1],
+    "/ limma", as.character(packageVersion("limma")),
+    "top 5 by P are the 5 planted genes, logFC",
+    round(mean(de_top$logFC), 6), "and 95 flat",
+    "/ metafor", as.character(packageVersion("metafor")),
+    "EE pooled", round(as.numeric(coef(ma_ee)), 6),
+    "= closed form, REML tau2", signif(ma_re$tau2, 4),
+    "/", py_line, "\n")

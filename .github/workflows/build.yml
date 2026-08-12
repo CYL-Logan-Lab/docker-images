@@ -186,6 +186,17 @@ jobs:
       # test ran -- the whole failure above was a command that exits 0 while
       # doing nothing -- so the script prints a sentinel and this asserts it.
       #
+      # What gets mounted is the image's whole directory, read-only, not the
+      # single file. t2d-sc-lipid ships two runtimes as of its v6 and its R half
+      # hands off to a `smoke.py` beside it; a one-file mount would have made
+      # that handoff impossible to reach. The alternative -- a second CI step for
+      # the Python half -- was rejected because two sentinels can go green one at
+      # a time, and an image is not verified by whichever half happened to run.
+      # So there is still one entry point and one sentinel, and smoke.R fails if
+      # the interpreter it expects is in the image but the script it drives is
+      # not. Directories with no second file (t2d-meta-lipid) are unaffected:
+      # they get the same mount and ignore the rest of it.
+      #
       # Every image directory therefore owns a `smoke.R` that ends in a line
       # starting "smoke ok:", and the file is required rather than optional.
       # t2d-meta-lipid arrived on main calling its copy `smoke-test.R`, mounted
@@ -213,8 +224,8 @@ jobs:
           [[ -f "${script}" ]] || { echo "::error::${script} does not exist -- every image needs a smoke test"; exit 1; }
           echo "smoke testing ${img} with ${script}"
           docker run --rm --network none \
-            -v "${PWD}/${script}:/smoke.R:ro" \
-            "${img}" Rscript --vanilla /smoke.R 2>&1 | tee "${RUNNER_TEMP}/smoke.out"
+            -v "${PWD}/${IMAGE}:/smoke:ro" \
+            "${img}" Rscript --vanilla /smoke/smoke.R 2>&1 | tee "${RUNNER_TEMP}/smoke.out"
           grep -q '^smoke ok:' "${RUNNER_TEMP}/smoke.out" || {
             echo "::error::${script} exited 0 without printing its sentinel -- it did not run to the end"; exit 1; }
 

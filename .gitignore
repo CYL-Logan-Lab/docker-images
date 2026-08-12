@@ -6,3 +6,7 @@
 
 .DS_Store
 *.swp
+
+# A stray `python smoke.py` outside the container leaves one of these next to
+# the recipe; CI runs it with -B and never writes one.
+__pycache__/

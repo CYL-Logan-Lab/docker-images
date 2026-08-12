@@ -13,7 +13,7 @@ ghcr.io/cyl-logan-lab/<directory>
 
 | Directory | Used by | Contents |
 |---|---|---|
-| [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr, all databases offline |
+| [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr + hdWGCNA/UCell/GSVA + decoupleR/dorothea + slingshot + limma/metafor, all databases offline; plus a hash-locked Python 3.12 venv at `/opt/pyenv` for cNMF |
 | [`t2d-meta-lipid/`](t2d-meta-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-adipose-depot-dysfunction](https://github.com/CYL-Logan-Lab/t2d-adipose-depot-dysfunction) | R 4.5.2 / coloc 6.0.1 / jsonlite 2.0.0 / curl 8.5.0 |
 
 ## How downstream projects reference an image
@@ -58,7 +58,7 @@ image. So rebuilding the same recipe six months later **may** yield a slightly
 different environment — which is exactly why downstream must reference the
 digest instead of "building its own from the recipe".
 
-## Four pinning layers
+## Five pinning layers
 
 Every Dockerfile has to answer "what is this environment" on its own. A recipe
 missing one of these layers only says "roughly these packages":
@@ -84,8 +84,29 @@ missing one of these layers only says "roughly these packages":
    unpinned.
 
    Reach for this layer only when a package is on neither CRAN nor
-   Bioconductor. It is the weakest of the four: nothing upstream promises the
+   Bioconductor. It is the weakest of the five: nothing upstream promises the
    repository will still exist.
+5. **PyPI as a hash-locked closure**, when an image needs Python as well. Direct
+   pins are written by hand (`requirements-py.in`) and resolved once into a lock
+   carrying a sha256 for every artifact in the transitive closure
+   (`requirements-py.txt`); the build installs it with `--require-hashes
+   --only-binary=:all:` into a venv, so pip refuses anything not listed and
+   refuses any source distribution. This is the **strongest** layer here, and
+   worth saying plainly because layer 3 is the weakest: a Bioconductor
+   release-branch URL pins the direct dependencies by assertion and lets their
+   transitive closure drift, whereas re-running this layer either installs
+   artifacts whose sha256 the lock already named or fails outright. State the
+   guarantee precisely, though — the lock authorises a *set* of artifacts per
+   distribution (every wheel upstream published for that version, and the source
+   archive), and it is the platform and interpreter that pick one member of it:
+   `cp312`, `x86_64`, `glibc >= 2.28`, all three asserted before the install
+   runs. The interpreter itself comes from apt, and so does the bootstrap pip
+   that executes the install, so it is the packages that repeat byte for byte,
+   not the whole environment. `--only-binary=:all:` at install time is what makes
+   the closure wheel-only, and therefore what lets the image ship no compiler;
+   resolving with `--no-build` guarantees the resolution never needed one.
+
+   `t2d-sc-lipid` is the only image using this so far, for cNMF.
 
 Four further conventions:
 
@@ -94,14 +115,17 @@ Four further conventions:
   would be useless: a cache hit skips the whole layer, so the build would not
   have run a single R process while still looking "verified". A publishing build
   pulls the image back by digest, so the pushed artifact itself is what gets
-  tested.
+  tested. CI mounts the image's whole directory read-only and runs `smoke.R`
+  from it; an image shipping a second runtime puts its test beside that file and
+  `smoke.R` drives it, so there is one entry point and one sentinel. Two
+  sentinels would be worse, not better — they can go green one at a time.
 - **Bake the package manifest into the image** (`/opt/Renv-manifest.tsv`),
   recording the whole library rather than just the named packages — for the
   transitive dependencies the assertions cannot cover, this at least answers
   afterwards which version was in there. Write it in the **last** install layer,
   or it will not list what the later layers installed.
 - **A reference database that a package fetches at run time is not pinned by any
-  of the four layers** — the result then depends on the day the analysis ran.
+  of the layers above** — the result then depends on the day the analysis ran.
   Prefer packages that ship their databases (`org.Hs.eg.db`, `reactome.db`,
   `CellChatDB`); when the data is distributed separately, download it *into the
   image* from an immutable archive and verify a checksum (NicheNet's prior

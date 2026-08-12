@@ -1,0 +1,155 @@
+# ============================================================================
+# Direct Python dependencies for the t2d-sc-lipid image (added in v6).
+# This file is human-edited; it is NOT what gets installed.
+#
+# ── What actually gets installed ────────────────────────────────────────────
+# requirements-py.txt, a fully pinned and fully hashed lock generated from this
+# file on a workstation:
+#
+#   uv pip compile requirements-py.in \
+#       --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
+#       --generate-hashes --no-build -o requirements-py.txt
+#
+# Regenerate it whenever a pin below moves, and commit both files in the same
+# commit -- pyenv-verify.py compares the two in both directions (it recovers the
+# lock's direct requirements from uv's `# via` annotations, so deleting a pin
+# here without re-resolving fails the build just as adding one does).
+#
+# ── This layer is pinned harder than the R layers, and that is not a style
+#    inconsistency ─────────────────────────────────────────────────────────────
+# The Dockerfile header explains that Bioconductor's transitive dependencies are
+# not pinned, because Bioc has no dated snapshot service and per-package
+# assertions can only cover packages named by hand. PyPI has no snapshot service
+# either -- but pip can install from a hash-locked closure, which is a stronger
+# guarantee than a snapshot date: every package is pinned by version *and* by
+# artifact hash, transitive ones included, and pip refuses any requirement that
+# reaches it without a hash. It stops being true only if PyPI deletes a file, in
+# which case the build fails loudly rather than drifting.
+#
+# Stated precisely, because the loose version of this claim is wrong: the lock
+# authorises ~1000 hashes for 53 distributions, one per artifact upstream
+# published for the pinned version -- every wheel *and* the source archive -- so
+# what pip guarantees is "nothing outside this set". Which member of the set gets
+# chosen is decided by the platform and interpreter, and both are fixed here
+# (x86_64, glibc >= 2.28, cp312) and asserted before the install runs, in
+# install-pypkgs.sh. So in this image the resolution is determined, but by the
+# lock *plus* the interpreter and platform, not by the lock alone. See the apt
+# caveat in the Dockerfile: the interpreter's patch version comes from Ubuntu's
+# archive and is recorded rather than pinned.
+#
+# ── --no-build: nothing was built to resolve this, and nothing builds to
+#    install it ────────────────────────────────────────────────────────────────
+# --no-build makes the *resolution* wheel-only: if a future pin ships no
+# manylinux wheel, `uv pip compile` fails here on the workstation instead of
+# failing a 40-minute CI build. It does not make the lock sdist-free -- the hash
+# list above includes upstream's source archives, because it lists every artifact
+# for the version. What keeps a compiler out of the image is the install-side
+# flag, --only-binary=:all: in install-pypkgs.sh; the two are complementary and
+# neither on its own says "no build toolchain is needed here".
+#
+# ── Why there is a Python environment in an R image at all ──────────────────
+# The gene-program layer (image v5) answered the question for myeloid cells and
+# not for ASPC or adipocytes: hdWGCNA's donor-level co-expression networks in
+# those two lineages produced modules that fail every coherence gate (0/15 and
+# 1/16 with GO enrichment). The decision downstream was to attack those two
+# lineages with cell-level de novo programs instead -- consensus NMF, which is
+# cNMF, which is Python-only. There is no R implementation of the consensus
+# procedure that the method's own paper describes, and re-implementing a
+# published method to avoid a language boundary would be a worse trade than
+# adding a locked virtualenv.
+#
+# ── Nuclei cross the language boundary as files, not through a bridge ───────
+# zellkonverter/basilisk would let R write .h5ad directly, and it is deliberately
+# absent: basilisk provisions a conda environment on first use, i.e. it downloads
+# an environment at analysis time. That is the same provenance defect that kept
+# msigdbr, SCENIC and liana out of this image, and it is not more acceptable
+# because the download is an environment rather than a database. The bridge is an
+# explicit export instead -- Matrix Market counts plus two TSVs from R, read back
+# with scipy.io.mmread into an AnnData -- which uses only what is pinned below
+# and leaves a readable intermediate on disk.
+#
+# ── What is deliberately NOT here ───────────────────────────────────────────
+#   * pySCENIC -- identical objection to the R SCENIC recorded in
+#     install-Rpkgs.R: it needs multi-gigabyte cisTarget motif rankings fetched
+#     from resources.aertslab.org at analysis time. decoupleR + dorothea remains
+#     the offline TF-activity path.
+#   * leidenalg / igraph / harmonypy -- clustering and integration were done in
+#     Seurat and are not being redone. cNMF factorises a matrix; it does not need
+#     a graph. Adding them would mean two clusterings of the same cells with
+#     nothing deciding between them.
+#   * scrublet / doubletdetection -- doublet scoring is scDblFinder's job in this
+#     project and the scores are already in the result tables.
+# ============================================================================
+
+# The reason this layer exists. cnmf 1.7.1 declares scikit-learn, anndata,
+# scanpy, pandas, numpy, matplotlib, palettable, scipy and pyyaml; every one of
+# them is named below rather than left to resolution, because they are all
+# either numerical (the factorisation runs through them) or IO (the nuclei enter
+# through them), and an unnamed dependency is one nobody notices moving.
+cnmf==1.7.1
+
+# The data model on both sides of the bridge. anndata reads the exported matrix;
+# scanpy supplies the normalisation and high-variance-gene selection that cNMF's
+# prepare step calls. Both require Python >= 3.12, which the base image's
+# system interpreter (3.12.3) satisfies -- see install-pypkgs.sh, which asserts it.
+anndata==0.13.2
+scanpy==1.12.3
+
+# The numerical floor. numpy is held at the highest release that satisfies every
+# consumer here: numba caps it below 2.6, scipy below 2.8, anndata floors it at
+# 2.1. scikit-learn matters more than its position in this list suggests -- cNMF
+# does not implement NMF, it calls sklearn.decomposition.NMF once per replicate
+# and clusters the resulting spectra, so the factorisation *is* sklearn's.
+numpy==2.5.2
+scipy==1.18.0
+scikit-learn==1.9.0
+
+# pandas is held on the 2.x line rather than taken at 3.0.x. Both satisfy the
+# `pandas>=2.3` that scanpy and anndata declare, so the resolver would happily
+# take 3.0; the pin is a judgement, not a constraint. pandas 3.0 changed
+# defaults that library code silently depends on (string dtype, copy-on-write),
+# and cnmf is a small research package that predates it. 2.3.3 is the last 2.x
+# release. Revisit when cnmf declares support rather than when 3.x merely
+# resolves.
+pandas==2.3.3
+
+# The compiled pair scanpy routes through, named because they are the fragile
+# ones: numba pins llvmlite to a single minor version and caps numpy, so a bump
+# to any of the three is a three-way constraint problem rather than an upgrade.
+numba==0.67.0
+llvmlite==0.49.0
+
+# IO and plotting. h5py is how .h5ad is actually written; matplotlib and
+# palettable are cnmf's own hard dependencies (it draws the k-selection diagnostic
+# itself); pyyaml is how cnmf serialises the parameters of a run, which makes it
+# part of the provenance rather than a formatting detail.
+h5py==3.16.0
+matplotlib==3.11.1
+palettable==3.3.3
+PyYAML==6.0.3
+
+# ── The installer itself ─────────────────────────────────────────────────────
+# pip is here because otherwise it is the one thing in /opt/pyenv that arrived
+# unpinned. `python3 -m venv` runs ensurepip, which unpacks whatever pip wheel
+# the apt package python3-pip-whl happens to carry that day -- so a claim that
+# the venv contains only what this file names would have been false, and the
+# tool doing the hash checking would itself have been the unchecked part.
+#
+# Naming it here fixes what can be fixed, in the ordinary way rather than with
+# special machinery: the locked pip is a hashed requirement like any other, and
+# the install runs with --force-reinstall so the seeded copy is replaced by the
+# locked artifact even when apt happens to ship the same version and pip would
+# otherwise report "already satisfied". It is then covered by the same version
+# assertion as everything else (pyenv-verify.py), so an Ubuntu pip update shows
+# up as a build failure naming the drift instead of as a silent change of
+# installer.
+#
+# What this does not fix, and install-pypkgs.sh says so where it happens: the
+# bootstrap pip is still the code that *executes* the hash-checked install. Some
+# installer has to run first, and that one is trusted through apt's signed
+# archive rather than through this file.
+#
+# Python 3.12's ensurepip no longer seeds setuptools, so pip is the whole of
+# what needs saying here; pyenv-verify.py fails if anything else turns up
+# installed that the lock does not list.
+pip==26.2.1

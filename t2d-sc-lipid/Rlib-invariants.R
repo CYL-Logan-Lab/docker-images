@@ -76,6 +76,14 @@ PKG_INVARIANT <- c(
   # 65 packages -- the highest minimums are lower still: Matrix 1.5-0 (GSVA),
   # igraph 2.0.0 (graphlayouts), Rcpp 0.11.0 (WGCNA), and nothing at all for the
   # other nine.
+  #
+  # What v6 adds is two packages and it does not move this list. limma declares
+  # only `statmod`, metafor declares `Matrix` with **no version at all**, and of
+  # metafor's closure only metadat is not already installed (it Imports utils,
+  # tools and mathjaxr). So nothing newly reachable declares a minimum on any
+  # name below, and the six-package re-check above stands unchanged. v6 also
+  # adds a Python venv, which cannot interact with this at all: it is a separate
+  # interpreter with its own hash-locked closure and no R package sees it.
   irlba         = "2.3.7",
   uwot          = "0.2.4",
   igraph        = "2.3.2",
