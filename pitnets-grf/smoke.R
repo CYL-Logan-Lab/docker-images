@@ -72,8 +72,10 @@ stopifnot(status == 0)
 
 cat(
   "smoke ok: PitNETs scRNA-seq/ST/bulk/DRS downstream analysis and graphics; ",
-  "R ", getRversion(), ", Seurat ", packageVersion("Seurat"),
-  ", DESeq2 ", packageVersion("DESeq2"),
-  ", IsoformSwitchAnalyzeR ", packageVersion("IsoformSwitchAnalyzeR"), "\n",
+  "R ", as.character(getRversion()),
+  ", Seurat ", as.character(packageVersion("Seurat")),
+  ", DESeq2 ", as.character(packageVersion("DESeq2")),
+  ", IsoformSwitchAnalyzeR ",
+  as.character(packageVersion("IsoformSwitchAnalyzeR")), "\n",
   sep = ""
 )
