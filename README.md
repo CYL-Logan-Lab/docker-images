@@ -13,6 +13,7 @@ ghcr.io/cyl-logan-lab/<directory>
 
 | Directory | Used by | Contents |
 |---|---|---|
+| [`pitnets-grf/`](pitnets-grf/Dockerfile) | PitNETs_GRF | Downstream scRNA-seq + spatial transcriptomics + bulk RNA-seq + Nanopore DRS result analysis: Seurat/Scanpy/SpatialData, DESeq2/edgeR/limma, isoform-switch and genomic-range tooling, plus publication graphics; no Cell Ranger, basecaller or aligner |
 | [`t2d-sc-lipid/`](t2d-sc-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-sc-lipid](https://github.com/CYL-Logan-Lab/t2d-sc-lipid) | R 4.5.2 / Seurat 5.5.1 / Bioconductor 3.22 + scDblFinder + clusterProfiler/ReactomePA + CellChat/nichenetr + hdWGCNA/UCell/GSVA + decoupleR/dorothea + slingshot + limma/metafor, all databases offline; plus a hash-locked Python 3.12 venv at `/opt/pyenv` for cNMF |
 | [`t2d-meta-lipid/`](t2d-meta-lipid/Dockerfile) | [CYL-Logan-Lab/t2d-adipose-depot-dysfunction](https://github.com/CYL-Logan-Lab/t2d-adipose-depot-dysfunction) | R 4.5.2 / coloc 6.0.1 / jsonlite 2.0.0 / curl 8.5.0 |
 
