@@ -39,7 +39,7 @@ condition <- factor(rep(c("control", "tumour"), each = 4))
 bulk_metadata <- data.frame(condition, row.names = colnames(bulk_counts))
 dds <- DESeqDataSetFromMatrix(bulk_counts, bulk_metadata, ~condition)
 dds <- DESeq(dds, quiet = TRUE)
-bulk_result <- results(dds)
+bulk_result <- DESeq2::results(dds)
 stopifnot(nrow(bulk_result) == 100, "log2FoldChange" %in% colnames(bulk_result))
 
 ranges <- GRanges(c("chr1", "chr1"), IRanges(c(100, 180), width = 100))
