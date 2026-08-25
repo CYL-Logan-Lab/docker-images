@@ -9,7 +9,7 @@
 suppressPackageStartupMessages({
   library(rjags)
   library(infercnv)
-  library(CaSpER)
+  library(copykat)
   library(Matrix)
 })
 
@@ -70,31 +70,30 @@ check("inferCNV builds an object with a reference", {
   if (!length(object@reference_grouped_cell_indices)) stop("reference group not registered")
 })
 
-# 3. CaSpER must expose the entry points the analysis calls.
-check("CaSpER exports its entry points", {
-  exported <- getNamespaceExports("CaSpER")
-  missing <- setdiff(c("CreateCasperObject", "runCaSpER"), exported)
-  if (length(missing)) stop("missing exports: ", paste(missing, collapse = ", "))
-  message("    CaSpER exports ", length(exported), " functions")
+# 3. copyKAT must expose its entry point and its declared imports must load,
+#    since those are what break first on a dependency drift.
+check("copyKAT entry point and imports are available", {
+  exported <- getNamespaceExports("copykat")
+  if (!"copykat" %in% exported) stop("copykat() is not exported")
+  for (package in c("parallelDist", "dlm", "mixtools", "cluster", "MCMCpack", "transport")) {
+    if (!requireNamespace(package, quietly = TRUE)) stop("missing import: ", package)
+  }
+  message("    copykat ", as.character(utils::packageVersion("copykat")),
+          " exports ", length(exported), " functions")
 })
 
-# 4. CaSpER's compiled HMM must be loaded, not merely present on disk.
-check("CaSpER compiled HMM is loaded", {
-  if (!"CaSpER" %in% names(getLoadedDLLs())) stop("CaSpER DLL is not loaded")
+# 4. The mixture and distance machinery copyKAT relies on must actually run,
+#    not merely be importable.
+check("copyKAT numeric machinery runs", {
+  set.seed(2)
+  values <- c(rnorm(200, 0, 1), rnorm(200, 4, 1))
+  fit <- suppressMessages(mixtools::normalmixEM(values, k = 2, maxit = 200, epsilon = 1e-3))
+  if (length(fit$mu) != 2) stop("mixture model did not return two components")
+  distance <- parallelDist::parDist(matrix(rnorm(200), nrow = 20), method = "euclidean")
+  if (!inherits(distance, "dist")) stop("parallelDist did not return a dist object")
 })
 
-# 5. BAFExtract must be callable. It has no cell-barcode awareness, so the
-#    analysis stage splits BAMs by barcode group before piping into it; this only
-#    verifies the binary exists and runs.
-check("BAFExtract binary runs", {
-  path <- Sys.which("BAFExtract")
-  if (!nzchar(path)) stop("BAFExtract not found on PATH")
-  output <- suppressWarnings(system2("BAFExtract", stdout = TRUE, stderr = TRUE))
-  if (!length(output)) stop("BAFExtract produced no output")
-  message("    ", path)
-})
-
-# 6. The base image's analysis stack must still be intact: this image is a
+# 5. The base image's analysis stack must still be intact: this image is a
 #    superset, and a regression here would silently change tumour results.
 check("base analysis stack is unchanged", {
   for (package in c("Seurat", "UCell", "RcppML", "presto")) {
@@ -112,8 +111,8 @@ if (length(failures)) {
   quit(status = 1)
 }
 
-cat(sprintf("smoke ok: pitnets-cnv | R %s.%s | infercnv %s | CaSpER %s | JAGS %s\n",
+cat(sprintf("smoke ok: pitnets-cnv | R %s.%s | infercnv %s | copykat %s | JAGS %s\n",
             R.version$major, R.version$minor,
             as.character(utils::packageVersion("infercnv")),
-            as.character(utils::packageVersion("CaSpER")),
+            as.character(utils::packageVersion("copykat")),
             as.character(rjags::jags.version())))
