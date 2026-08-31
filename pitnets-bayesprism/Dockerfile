@@ -28,17 +28,22 @@ ENV BAYESPRISM_COMMIT=19052052a6f30833b27e2148294459b0ba2f923e \
     LC_ALL=C.UTF-8 \
     LANG=C.UTF-8
 
-# snowfall and gplots come from the date-frozen CRAN snapshot configured in the
-# base image; scran and BiocParallel come from the pinned Bioconductor release
-# already asserted there.
-RUN Rscript --vanilla -e 'options(repos = c(CRAN = Sys.getenv("CRAN_SNAPSHOT", "https://cran.rstudio.com"))); \
+# snowfall and gplots are installed from the same date-frozen Posit snapshot
+# the base image used, asserted below rather than inherited implicitly.
+# scran and BiocParallel come from the pinned Bioconductor release already
+# asserted in the base. The snapshot is also written to Rprofile.site so that
+# run-time repositories cannot drift to a rolling mirror.
+ENV CRAN_SNAPSHOT=https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06
+RUN Rscript --vanilla -e 'options(repos = c(CRAN = Sys.getenv("CRAN_SNAPSHOT"))); \
+    if (!grepl("packagemanager.posit.co/cran/.*/[0-9]{4}-[0-9]{2}-[0-9]{2}", Sys.getenv("CRAN_SNAPSHOT"))) stop("CRAN_SNAPSHOT is not a dated snapshot"); \
     install.packages(c("snowfall", "gplots"), quiet = TRUE); \
     if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", quiet = TRUE); \
     BiocManager::install(c("scran", "BiocParallel"), ask = FALSE, update = FALSE); \
     for (p in c("snowfall", "gplots", "scran", "BiocParallel")) { \
       if (!requireNamespace(p, quietly = TRUE)) stop("failed to install ", p); \
       cat(p, as.character(packageVersion(p)), "\n") \
-    }'
+    }' \
+    && printf 'local({r <- getOption("repos"); r["CRAN"] <- Sys.getenv("CRAN_SNAPSHOT"); options(repos = r)})\n' > /usr/lib/R/etc/Rprofile.site
 
 RUN curl -fsSL -o /tmp/bayesprism.tar.gz \
       "https://github.com/Danko-Lab/BayesPrism/archive/${BAYESPRISM_COMMIT}.tar.gz" \
