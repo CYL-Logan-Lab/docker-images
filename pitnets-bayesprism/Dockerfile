@@ -6,10 +6,12 @@
 #
 # BayesPrism is the primary bulk deconvolution method per the frozen spec
 # (bulk_deconvolution_reference_spec_20260824.md): it takes the full
-# cells-by-genes raw count reference plus cell-type and cell-state labels, and
-# its state-posterior summation is the correct mechanism for patient-heterogeneous
-# malignant cells. The two collapsed signature matrices from the same spec serve
-# as linear cross-checks and need no special environment.
+# cells-by-genes raw count reference plus cell-type and cell-state labels. Donor
+# states represent malignant heterogeneity in the initial Gibbs pass; version
+# 2.2.3 exposes final updated fractions only at cell-type level, so lineage is
+# estimated separately from recovered malignant expression. The two collapsed
+# signature matrices from the same spec serve as linear cross-checks and need
+# no special environment.
 #
 # BayesPrism is installed from a GitHub archive fetched by commit SHA, never via
 # remotes::install_github, which would honour Remotes fields and fetch further
@@ -24,6 +26,10 @@ LABEL org.opencontainers.image.base.name="ghcr.io/cyl-logan-lab/pitnets-grf@sha2
 
 ENV BAYESPRISM_COMMIT=19052052a6f30833b27e2148294459b0ba2f923e \
     BAYESPRISM_VERSION=2.2.3 \
+    SNOWFALL_VERSION=1.84.6.3 \
+    GPLOTS_VERSION=3.3.0 \
+    SCRAN_VERSION=1.38.1 \
+    BIOCPARALLEL_VERSION=1.44.0 \
     DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
     LANG=C.UTF-8
@@ -31,19 +37,25 @@ ENV BAYESPRISM_COMMIT=19052052a6f30833b27e2148294459b0ba2f923e \
 # snowfall and gplots are installed from the same date-frozen Posit snapshot
 # the base image used, asserted below rather than inherited implicitly.
 # scran and BiocParallel come from the pinned Bioconductor release already
-# asserted in the base. The snapshot is also written to Rprofile.site so that
-# run-time repositories cannot drift to a rolling mirror.
+# asserted in the base. Runtime analysis never installs packages; the snapshot
+# remains in the image environment as provenance and is asserted by smoke.R.
 ENV CRAN_SNAPSHOT=https://packagemanager.posit.co/cran/__linux__/noble/2026-08-06
 RUN Rscript --vanilla -e 'options(repos = c(CRAN = Sys.getenv("CRAN_SNAPSHOT"))); \
     if (!grepl("packagemanager.posit.co/cran/.*/[0-9]{4}-[0-9]{2}-[0-9]{2}", Sys.getenv("CRAN_SNAPSHOT"))) stop("CRAN_SNAPSHOT is not a dated snapshot"); \
     install.packages(c("snowfall", "gplots"), quiet = TRUE); \
     if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", quiet = TRUE); \
     BiocManager::install(c("scran", "BiocParallel"), ask = FALSE, update = FALSE); \
-    for (p in c("snowfall", "gplots", "scran", "BiocParallel")) { \
+    expected <- c(snowfall = Sys.getenv("SNOWFALL_VERSION"), \
+                  gplots = Sys.getenv("GPLOTS_VERSION"), \
+                  scran = Sys.getenv("SCRAN_VERSION"), \
+                  BiocParallel = Sys.getenv("BIOCPARALLEL_VERSION")); \
+    for (p in names(expected)) { \
       if (!requireNamespace(p, quietly = TRUE)) stop("failed to install ", p); \
-      cat(p, as.character(packageVersion(p)), "\n") \
-    }' \
-    && printf 'local({r <- getOption("repos"); r["CRAN"] <- Sys.getenv("CRAN_SNAPSHOT"); options(repos = r)})\n' > /usr/lib/R/etc/Rprofile.site
+      found <- as.character(packageVersion(p)); \
+      if (found != expected[[p]]) stop(p, " version drift: found ", found, \
+                                       " expected ", expected[[p]]); \
+      cat(p, found, "\n") \
+    }'
 
 RUN curl -fsSL -o /tmp/bayesprism.tar.gz \
       "https://github.com/Danko-Lab/BayesPrism/archive/${BAYESPRISM_COMMIT}.tar.gz" \

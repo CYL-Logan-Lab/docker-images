@@ -32,12 +32,23 @@ for (package in c("snowfall", "gplots", "scran", "BiocParallel", "NMF", "Matrix"
   }
 }
 
-# The CRAN repository must be a dated Posit snapshot. A rolling mirror here
-# would let the same Dockerfile install different packages over time. The
-# Dockerfile writes this into Rprofile.site, so it applies at run time too.
-repo <- getOption("repos")[["CRAN"]]
-if (is.null(repo) || !grepl("packagemanager.posit.co/cran/.*/[0-9]{4}-[0-9]{2}-[0-9]{2}", repo)) {
-  fail(paste("CRAN repo is not a dated snapshot:", if (is.null(repo)) "NULL" else repo))
+# The build repository and every added dependency version are explicit image
+# metadata. Runtime analysis does not install packages.
+snapshot <- Sys.getenv("CRAN_SNAPSHOT")
+if (!grepl("packagemanager.posit.co/cran/.*/[0-9]{4}-[0-9]{2}-[0-9]{2}", snapshot)) {
+  fail(paste("CRAN_SNAPSHOT is not a dated snapshot:", snapshot))
+}
+expected_dependencies <- c(
+  snowfall = Sys.getenv("SNOWFALL_VERSION"),
+  gplots = Sys.getenv("GPLOTS_VERSION"),
+  scran = Sys.getenv("SCRAN_VERSION"),
+  BiocParallel = Sys.getenv("BIOCPARALLEL_VERSION")
+)
+for (package in names(expected_dependencies)) {
+  found <- as.character(packageVersion(package))
+  if (found != expected_dependencies[[package]]) {
+    fail(paste(package, "version", found, "!=", expected_dependencies[[package]]))
+  }
 }
 
 # Minimal end-to-end exercise of the estimation path on synthetic data: two
@@ -45,20 +56,21 @@ if (is.null(repo) || !grepl("packagemanager.posit.co/cran/.*/[0-9]{4}-[0-9]{2}-[
 # states, three bulk samples of known mixing. Checks that the optimizer and
 # its dependencies run and that recovered fractions follow the mixture.
 set.seed(20260830)
-n_genes <- 40L
-profile_a <- c(rep(8, 20), rep(1, 20))
-profile_b <- c(rep(1, 20), rep(8, 20))
+n_genes <- 200L
+profile_a <- c(rep(8, 100), rep(1, 100))
+profile_b <- c(rep(1, 100), rep(8, 100))
 gene_names <- paste0("ENSG", sprintf("%011d", seq_len(n_genes)))
-cell_names <- paste0("cell", 1:20)
+cell_names <- paste0("cell", 1:80)
 
-# reference: cells-by-genes, as the package expects.
-counts <- matrix(0L, 20, n_genes, dimnames = list(cell_names, gene_names))
-counts[1:10, ] <- t(replicate(10, rpois(n_genes, profile_a)))
-counts[11:20, ] <- t(replicate(10, rpois(n_genes, profile_b)))
+# reference: cells-by-genes, as the package expects. Each state has 20 cells,
+# meeting the package's own minimum recommendation.
+counts <- matrix(0L, 80, n_genes, dimnames = list(cell_names, gene_names))
+counts[1:40, ] <- t(replicate(40, rpois(n_genes, profile_a)))
+counts[41:80, ] <- t(replicate(40, rpois(n_genes, profile_b)))
 sc_ref <- Matrix::Matrix(counts, sparse = TRUE)
 
-type_labels <- rep(c("typeA", "typeB"), each = 10)
-state_labels <- rep(c("A_donor1", "A_donor2", "B_donor1", "B_donor2"), each = 5)
+type_labels <- rep(c("typeA", "typeB"), each = 40)
+state_labels <- rep(c("A_donor1", "A_donor2", "B_donor1", "B_donor2"), each = 20)
 
 # mixture: samples-by-genes.
 bulk <- matrix(0L, 3, n_genes, dimnames = list(c("s1", "s2", "s3"), gene_names))
@@ -73,7 +85,10 @@ prism <- new.prism(
   input.type = "count.matrix",
   cell.type.labels = type_labels,
   cell.state.labels = state_labels,
-  key = "typeA"
+  key = "typeA",
+  # Disable cohort-derived outlier filtering in this small synthetic fixture.
+  outlier.cut = 1,
+  outlier.fraction = 1
 )
 
 result <- run.prism(prism, n.cores = 1)
@@ -90,12 +105,23 @@ if (!(fractions["s1", "typeA"] > fractions["s3", "typeA"])) {
   fail("fraction ordering does not follow the constructed mixture")
 }
 
-state_fractions <- get.fraction(result, which.theta = "final", state.or.type = "state")
+# BayesPrism 2.2.3 exposes states only from the initial Gibbs pass. A request
+# for final states warns and returns final cell-type fractions instead.
+state_fractions <- get.fraction(result, which.theta = "first", state.or.type = "state")
 if (is.null(state_fractions) || ncol(state_fractions) != 4L) {
   fail("unexpected state fraction matrix")
 }
 if (any(abs(rowSums(state_fractions) - 1) > 1e-6)) {
   fail("state fractions do not sum to 1")
+}
+
+final_cv <- result@posterior.theta_f@theta.cv
+state_cv <- result@posterior.initial.cellState@theta.cv
+if (!identical(dim(final_cv), c(3L, 2L)) || !identical(dim(state_cv), c(3L, 4L))) {
+  fail("unexpected posterior coefficient-of-variation dimensions")
+}
+if (any(!is.finite(final_cv)) || any(!is.finite(state_cv))) {
+  fail("non-finite posterior coefficient of variation")
 }
 
 exp_a <- get.exp(result, state.or.type = "type", cell.name = "typeA")
