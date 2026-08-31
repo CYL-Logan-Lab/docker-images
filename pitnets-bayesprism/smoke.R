@@ -7,9 +7,11 @@
 #
 # The API calls below were written against the BayesPrism 2.2.3 source at the
 # pinned commit, not against documentation prose:
-#   new.prism takes reference as cells-by-genes and mixture as samples-by-genes,
-#   has no out.dir or n.cores argument, and `key` names the malignant cell type
-#   that triggers the tumour-specific update mechanism.
+#   new.prism takes reference as cells-by-genes and mixture as samples-by-genes.
+#   The reference may be dgCMatrix, but the version-2.2.3 prism S4 class requires
+#   mixture to be a base matrix even though validate.input also accepts sparse
+#   matrices. new.prism has no out.dir or n.cores argument, and `key` names the
+#   malignant cell type that triggers the tumour-specific update mechanism.
 #   run.prism returns a BayesPrism object; fractions are extracted with
 #   get.fraction, which returns a samples-by-types matrix.
 
@@ -77,7 +79,9 @@ bulk <- matrix(0L, 3, n_genes, dimnames = list(c("s1", "s2", "s3"), gene_names))
 bulk[1, ] <- rpois(n_genes, 4 * profile_a + 1 * profile_b)
 bulk[2, ] <- rpois(n_genes, 2 * profile_a + 3 * profile_b)
 bulk[3, ] <- rpois(n_genes, 1 * profile_a + 5 * profile_b)
-bulk_mat <- Matrix::Matrix(bulk, sparse = TRUE)
+# BayesPrism 2.2.3's prism S4 class requires mixture to be a base matrix; its
+# validate.input function misleadingly accepts dgCMatrix before construction.
+bulk_mat <- bulk
 
 prism <- new.prism(
   reference = sc_ref,
